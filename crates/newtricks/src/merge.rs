@@ -186,10 +186,8 @@ pub fn unresolved(dir: &Path, conflicts: &[Conflict]) -> Vec<String> {
                     v.push(format!("{} (conflict markers)", c.path));
                 }
             }
-            "binary" | "deleted-locally" => {
-                if dir.join(format!("{}{UPSTREAM_SUFFIX}", c.path)).exists() {
-                    v.push(format!("{} (remove {}{UPSTREAM_SUFFIX} once resolved)", c.path, c.path));
-                }
+            "binary" | "deleted-locally" if dir.join(format!("{}{UPSTREAM_SUFFIX}", c.path)).exists() => {
+                v.push(format!("{} (remove {}{UPSTREAM_SUFFIX} once resolved)", c.path, c.path));
             }
             _ => {}
         }

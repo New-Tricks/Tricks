@@ -246,3 +246,39 @@ fn clawhub_mirrors_and_github_handoffs_resolve_to_git_skills() {
     assert_eq!(add["id"], "github.com/acme/tools//skills/pdf", "{add}");
     assert!(s.home.join(".claude/skills/pdf/SKILL.md").is_file());
 }
+
+#[test]
+fn live_adapters_run_together_and_all_list_the_same_skill() {
+    let mut s = Sandbox::new();
+    s.upstream("acme", "tools", &[("skills/pdf/SKILL.md", &skill_md("pdf", "Fill and merge PDF files", "body\n"))]);
+    let skills_sh = with_server(&mut s, "TRICKS_SKILLS_SH_URL");
+    let tessl = with_server(&mut s, "TRICKS_TESSL_URL");
+    let clawhub = with_server(&mut s, "TRICKS_CLAWHUB_URL");
+    put(&skills_sh, "/api/search?q=pdf&limit=20", json!({"skills": [{"skillId": "pdf", "name": "pdf", "installs": 500, "source": "acme/tools"}]}));
+    put(
+        &tessl,
+        "/experimental/search?q=pdf&page%5Bsize%5D=20",
+        json!({"data": [{"type": "skill", "attributes": {"sourceUrl": "https://github.com/acme/tools", "path": "skills/pdf/SKILL.md",
+                         "scores": {"quality": 0.7}}}]}),
+    );
+    put(
+        &clawhub,
+        "/api/v1/search?q=pdf&limit=20&nonSuspiciousOnly=true",
+        json!({"results": [{"slug": "pdf", "install": {"kind": "skills-sh"},
+                            "sourceIdentity": {"id": "acme/tools/pdf", "owner": "acme", "repo": "tools", "lifetimeInstalls": 500}}]}),
+    );
+    let out = s.json(&["search", "pdf"]);
+    let r = out.as_array().unwrap().iter().find(|r| r["id"] == "github.com/acme/tools//skills/pdf").unwrap_or_else(|| panic!("{out}"));
+    let listed: Vec<&str> = r["listed_in"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
+    for c in ["skills.sh", "tessl", "clawhub"] {
+        assert!(listed.iter().any(|l| l.starts_with(c)), "{c} missing from {listed:?}");
+    }
+    assert_eq!(signals(r, "tessl")["quality"], 0.7);
+    // The answers are cached: a repeat search makes no new catalog requests.
+    skills_sh.lock().unwrap().clear();
+    tessl.lock().unwrap().clear();
+    clawhub.lock().unwrap().clear();
+    let again = s.cmd(&s.root(), &["search", "pdf"]);
+    assert!(again.status.success());
+    assert!(!String::from_utf8_lossy(&again.stderr).contains("returned 404"), "{}", String::from_utf8_lossy(&again.stderr));
+}

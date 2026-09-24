@@ -65,7 +65,7 @@ pub fn pr(ctx: &Ctx, name: &str, title: Option<&str>, body: Option<&str>, dry_ru
     // Worktree of upstream at its current default branch; replay B → C onto it.
     let wt_root = ctx.paths.work().join("pr").join(format!("{}-{name}-{}", ws.key(), crate::state::now()));
     std::fs::create_dir_all(wt_root.parent().unwrap())?;
-    let branch = format!("tricks/{name}-{}", &crate::state::now().to_string());
+    let branch = format!("tricks/{name}-{}", crate::state::now());
     git(&mirror.dir, &["worktree", "add", "-q", "-b", &branch, &wt_root.to_string_lossy(), &u_commit])?;
     let target_dir = wt_root.join(&up_path);
     std::fs::create_dir_all(&target_dir)?;

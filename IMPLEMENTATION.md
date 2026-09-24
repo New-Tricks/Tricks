@@ -34,12 +34,12 @@ Core modules: `id` (grammar, URL normalization), `resolve` (refs, `@latest`, nam
 | M2 acceptance | `tests/workbench.rs` (scenarios 1, 4, 5 + rollback, frozen, auto ownership, upstream renames, agent skill, starred trust) | 9 pass |
 | NT1xx conformance | `tests/skills_ref_conformance.rs`: all validator and parser cases ported from the official `skills-ref` (agentskills/agentskills @ 69ef37e) | 26 pass |
 | `.well-known` discovery | `tests/wellknown.rs` against a local HTTP server: `skill-md`, `.tar.gz` and `.zip` entries, digest mismatch and traversal rejected, digest-based updates, unknown `$schema` refused | 2 pass |
-| Tessl / ClawHub adapters | `tests/catalogs.rs` against a local HTTP server: Tessl pointer-level indexing and signals; ClawHub native search → show → add → version bump → update, tampered and unlisted files refused, `_meta.json` stripped, MIT-0 terms, re-fetch of the locked version; skills.sh mirrors and GitHub handoffs resolve to git skills | 4 pass |
+| Tessl / ClawHub adapters | `tests/catalogs.rs` against a local HTTP server: Tessl pointer-level indexing and signals; ClawHub native search → show → add → version bump → update, tampered and unlisted files refused, `_meta.json` stripped, MIT-0 terms, re-fetch of the locked version; skills.sh mirrors and GitHub handoffs resolve to git skills; skills.sh, Tessl and ClawHub queried together all list the same skill, and repeats are served from the cache | 5 pass |
 | M3/M4 acceptance | `tests/workspace.rs` (scenarios 3, 6-trailer, 7 + variants, lint gate, licence override, pr dry-run) | 7 pass |
 | RPC protocol | `tests/rpc.rs` (framing, dispatch, confirmation errors) | pass |
 | Extension | `extension/out/test/runTest.js` in VS Code 1.128.1 (throwaway profile): activation, commands, status via real binary, lint diagnostics, virtual documents, Markdown preview | pass |
 | Live search | Real GitHub + skills.sh: default sources (≈530 skills) + live adapters; cold index ≈30 s, warm online ≈6 s, offline ≈20 ms | works |
-| Live Tessl / ClawHub | Real APIs, fresh sandbox, `search pdf`: 18 Tessl and 6 ClawHub listings with signals; `show`, hash-verified `add` and `outdated` of `clawhub.ai/awspace/skills//pdf`. Cold per-query cost: Tessl ≈5 s, ClawHub ≈18 s (its API takes 2–7 s per call; details are fetched in parallel); repeat queries are cached | works |
+| Live Tessl / ClawHub | Real APIs, fresh sandbox, `search pdf`: 18 Tessl and 6 ClawHub listings with signals; `show`, hash-verified `add` and `outdated` of `clawhub.ai/awspace/skills//pdf`. Live adapters run concurrently (`src/live.rs`): cold `search pdf` with all four ≈9 s, `react testing` ≈15 s (was ≈21–30 s sequentially), bounded by the slowest catalog or repository fetch; repeat queries are cached | works |
 | Scenario 2 (dedup) | Live results group identical copies across catalogs | works |
 | Scenario 8 (installers) | `scripts/ecosystem-test.sh`, run in CI (`ecosystem` job) and locally: publish a workspace, then `npx skills add --list`, `apm install` (into `.claude/skills/`), `claude plugin validate` + `marketplace add` + `install` (both skills loaded) | pass |
 | Platforms | CI on Ubuntu, macOS and Windows (Windows runs unit, conformance and protocol tests; link-asserting integration tests are Unix-only by design) | pass |
@@ -79,6 +79,7 @@ Core modules: `id` (grammar, URL normalization), `resolve` (refs, `@latest`, nam
 30. **GitHub-backed ClawHub skills install as git skills**: the download handoff is redirected to `github.com/<repo>//<path>`, tracking the repository normally rather than ClawHub's scanned commit. They are skipped in search results (no published version to index).
 31. **Tessl uses `/experimental/search`**, its only public search endpoint. Only the pointed-to skill directories are indexed (per-directory freshness), since Tessl often points into large application repositories.
 32. **`[settings] live`** selects the live-query adapters (default: skills.sh, Tessl, ClawHub, GitHub); `--no-live` skips all of them for one search.
+33. **Live adapters run concurrently.** Each adapter's network work — the catalog query, ClawHub details, and fetching the GitHub repositories and directories it points at — runs on its own thread; the database thread stores each batch as it arrives. A claim set stops two catalogs fetching the same repository twice, and listings whose skill arrives in another catalog's later batch are retried at the end. Sources not indexed through the GitHub API (other hosts, `TRICKS_NO_API`) are still indexed on the database thread.
 
 ## Known gaps
 
@@ -87,5 +88,4 @@ Core modules: `id` (grammar, URL normalization), `resolve` (refs, `@latest`, nam
 - **Cursor hidden-directory check (§17)** not run: needs an authenticated Cursor agent. The Linux rule is coded conservatively (copy when the target path is hidden).
 - **Extension UI** (Discover webview, publish panel, merge editor wiring) is covered by activation/RPC tests but not by UI automation.
 - **macOS signing/notarization** step is a placeholder in `release.yml`.
-- **Cold live search is network-bound**: the live adapters run one after another, so a first-time query costs ≈30 s with all four enabled (ClawHub's API is the slowest); repeats are cached per query. Running the adapters' network phases concurrently is the next step if this matters in practice.
 - **Deliberate differences from `skills-ref`**: unknown frontmatter keys are info (NT402) unless `strict-spec` is set, and `skill.md` is accepted with a warning (NT110) because Claude Code only loads `SKILL.md`.

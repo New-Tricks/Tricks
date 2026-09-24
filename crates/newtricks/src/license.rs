@@ -206,7 +206,7 @@ pub fn detect(inputs: &LicenseInputs) -> LicenseRecord {
         let note = if defer_to_file { "frontmatter refers to a licence file that is missing" } else { "no licence found" };
         return LicenseRecord { spdx: None, class: Class::Block.as_str().into(), source: format!("none ({note})"), confidence: 0.0 };
     }
-    results.sort_by(|a, b| b.0.cmp(&a.0));
+    results.sort_by_key(|r| std::cmp::Reverse(r.0));
     let (class, spdx, source, confidence) = results.into_iter().next().unwrap();
     LicenseRecord { spdx, class: class.as_str().into(), source: source.into(), confidence }
 }
