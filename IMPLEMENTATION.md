@@ -63,7 +63,7 @@ Core modules: `id` (grammar, URL normalization), `resolve` (refs, `@latest`, nam
 16. **Lint severities**: NT203 (absolute/home paths) is a warning; NT305 (first/second-person description) was added because the spec's example config references it; unknown keys are info (NT402).
 17. **Licence**: frontmatter like "Complete terms in LICENSE.txt" defers to the file; no licence found ⇒ block class; local originals are exempt from the licence gate (it applies to vendored skills, per §11).
 18. **Copilot is always copy-mode**: one `copilot` agent serves both VS Code (symlink bug) and the CLI through `~/.copilot/skills`.
-19. **Name and placeholders**: renamed from *skillbench* to **New Tricks** (command `tricks`) because "SkillBench" is an existing brand shipping agent-skill marketplaces. The GitHub org `new-tricks` is free (repo placeholder `New-Tricks/Tricks`); the extension publisher placeholder is `newtricks` — register both before release.
+19. **Name and placeholders**: renamed from *skillbench* to **New Tricks** (command `tricks`) because "SkillBench" is an existing brand shipping agent-skill marketplaces. GitHub: org `new-tricks` (lowercase), repo `new-tricks/tricks`, tap `new-tricks/homebrew-tap`. The extension publisher `newtricks` is still to be registered.
 20. **`New Tricks:` URIs** encode the skill ID as base64url (IDs contain `//`, which broke parse/serialize round trips).
 21. **Search refreshes stale sources on demand** (24 h default); the first search on a new machine is the slow one.
 22. **`tricks statusline`** is the agent status-line integration (cache-only; forced offline).

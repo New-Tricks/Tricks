@@ -624,7 +624,7 @@ Short-name resolution: `pdf` alone resolves against the current workspace's `tri
 
 - Homebrew formula (`brew install newtricks`), signed release binaries for macOS, Linux and Windows, `tricks self-update` for non-Homebrew installs.
 - Platform-specific VSIX builds bundling the binary, published to the VS Code Marketplace and Open VSX. Extension updates carry binary updates.
-- Name notes: formula `newtricks` (installs `tricks`), GitHub org `new-tricks` (repo `New-Tricks/Tricks`) and the VS Code publisher `newtricks` were free in September 2026. The earlier name *skillbench* was dropped because "SkillBench" is an existing brand shipping agent-skill marketplaces.
+- Name notes: formula `newtricks` (installs `tricks`), GitHub org `new-tricks` (repo `new-tricks/tricks`) and the VS Code publisher `newtricks` were free in September 2026. The earlier name *skillbench* was dropped because "SkillBench" is an existing brand shipping agent-skill marketplaces.
 
 ## 17. Resolved questions and remaining verification
 
