@@ -5,12 +5,20 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Re-run marketplace publishing for an existing release (e.g. after a transient
+  # Marketplace error). Versions already published are skipped.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish, e.g. v0.1.0
+        required: true
 
 permissions:
   contents: write
 
 jobs:
   binaries:
+    if: github.event_name == 'push'
     strategy:
       fail-fast: false
       matrix:
@@ -70,9 +78,6 @@ jobs:
   release:
     needs: binaries
     runs-on: ubuntu-latest
-    env:
-      VSCE_PAT: ${{ secrets.VSCE_PAT }}
-      OVSX_PAT: ${{ secrets.OVSX_PAT }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -82,6 +87,19 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+  publish:
+    needs: release
+    if: always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Download VSIX files from the release
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.vsix' --dir artifacts
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -89,7 +107,7 @@ jobs:
       # then `vsce publish --azure-credential`, and delete VSCE_PAT. See packaging/README.md#later.
       - name: Publish to VS Code Marketplace
         if: env.VSCE_PAT != ''
-        run: for f in artifacts/*.vsix; do npx @vscode/vsce publish --packagePath "$f" --pat "$VSCE_PAT"; done
+        run: for f in artifacts/*.vsix; do npx @vscode/vsce publish --skip-duplicate --packagePath "$f" --pat "$VSCE_PAT"; done
       - name: Publish to Open VSX
-        if: env.OVSX_PAT != ''
-        run: for f in artifacts/*.vsix; do npx ovsx publish "$f" --pat "$OVSX_PAT"; done
+        if: ${{ !cancelled() && env.OVSX_PAT != '' }}
+        run: for f in artifacts/*.vsix; do npx ovsx publish --skip-duplicate "$f" --pat "$OVSX_PAT"; done
