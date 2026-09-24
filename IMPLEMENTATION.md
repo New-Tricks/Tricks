@@ -1,0 +1,81 @@
+# New Tricks v0.1.0 — implementation notes
+
+Status of the implementation of [SPEC.md](SPEC.md), what was verified and how, the decisions made while building it (for review), and known gaps.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `crates/newtricks/src/` | Rust core + CLI (one crate, `lib` + `bin`). ~9k lines. |
+| `crates/newtricks/tests/` | Hermetic integration tests: the real binary against local "GitHub" repositories (`TRICKS_HOST_MAP`). |
+| `crates/newtricks/assets/new-tricks-skill/` | Bundled agent skill (spec §12). |
+| `extension/` | VS Code extension (TypeScript, zero runtime dependencies) over `tricks serve --stdio`. |
+| `.github/workflows/` | CI (Linux/macOS/Windows tests, extension build, extension-host test) and release (6 targets, checksums, platform VSIX, Marketplace/Open VSX publish). |
+| `packaging/` | Homebrew formula template and release checklist. |
+
+Core modules: `id` (grammar, URL normalization), `resolve` (refs, `@latest`, name lookup), `git` (system git, fetch-only mirrors), `sources` + `index` (adapters, FTS5, facets, dedup), `store` + `deploy` + `agents` (content-addressed store, links/copies, exclude handling, shadowing), `workbench` (installs, policies, updates, rollback), `workspace` + `merge` (vendoring, three-way merges, variants, worktrees), `lint`, `risk`, `license`, `publish`, `pr`, `rpc`, `statusline`, `doctor`, `selfupdate`.
+
+## Milestones
+
+| Milestone | Status |
+|---|---|
+| M1 Identity + search | Done. Adapters: git repos, `marketplace.json` (Claude + APM), skills.sh (live), GitHub code search (live), `.well-known`, `apm.yml`/`skills-lock.json` pointer lists. |
+| M2 Workbench installs | Done. Store, links/copy fallback per agent, policies, review-first updates, `auto`/`unsafe-auto` ownership rule, `--frozen`, rollback, `link`/`unlink` with exclude handling and `--shadow`, status line. |
+| M3 Workspace authoring | Done. `init/vendor/import/new`, three-way merges with `--continue/--abort`, C→R candidate preview, `edit/commit/use` with worktrees and `tricks.work.toml`, lint NT1–5xx with `--fix`, bundled agent skill with commit trailers. |
+| M4 Publish | Done. Gates, generated `marketplace.json` (single plugin + optional groups), metadata-only `apm.yml`, provenance, changelog, tags, `--push/--pr`, `tricks pr`. |
+| M5 Distribution | Pipelines and templates done; not yet run (needs the GitHub repo, a Marketplace publisher and secrets — see `packaging/README.md`). |
+| VS Code extension | Done: Discover, Preview, Workspace, Installed & Links, Problems-panel lint, diff/merge editors, publish pre-flight, status bar, frontmatter completion, `tricks.toml` schema. |
+
+## Verification
+
+| What | How | Result |
+|---|---|---|
+| Unit tests | `cargo test` (ids, URL normalization, tree hash vs git, licence detection, risk, lint rules, merge, config, framing) | 33 pass |
+| M2 acceptance | `tests/workbench.rs` (scenarios 1, 4, 5 + rollback, frozen, auto ownership) | 6 pass |
+| M3/M4 acceptance | `tests/workspace.rs` (scenarios 3, 6-trailer, 7 + variants, lint gate, licence override, pr dry-run) | 7 pass |
+| RPC protocol | `tests/rpc.rs` (framing, dispatch, confirmation errors) | pass |
+| Extension | `extension/out/test/runTest.js` in VS Code 1.128.1 (throwaway profile): activation, commands, status via real binary, lint diagnostics, virtual documents, Markdown preview | pass |
+| Live search | Real GitHub + skills.sh: default sources (≈530 skills) + live adapters; cold index ≈30 s, warm online ≈6 s, offline ≈20 ms | works |
+| Scenario 2 (dedup) | Live results group identical copies across catalogs | works |
+| Scenario 8 (installers) | Published a real workspace (vendored `anthropics/skills//skill-creator` + a new skill), then: `claude plugin validate` ✔, `claude plugin marketplace add` + `install` ✔ (2 skills, v0.1.0), `npx skills add <target> --list` ✔ (both skills), `apm install` (0.31.0) ✔ into `.claude/skills/` | pass |
+| Quality | `cargo clippy --all-targets` and `cargo fmt --check` | clean |
+
+## Decisions made during implementation — please review
+
+1. **Default sources** are five skill repos (anthropics/skills, openai/skills, vercel-labs/agent-skills, github/awesome-copilot, obra/superpowers). `anthropics/claude-plugins-official` is *not* default: it points at hundreds of external repos, too many for anonymous API limits. Marketplace refreshes index at most 60 external repos.
+2. **GitHub owner/repo are lowercased** in canonical IDs (GitHub is case-insensitive; catalogs disagree on casing, which broke deduplication).
+3. **Slash-branch URLs** (`/tree/feature/x/…`) resolve against live `git ls-remote`; a ref missing from a stale mirror triggers one forced fetch and retry.
+4. **Deployments stay on the committed version during upstream merges.** Dev links are pinned to a snapshot of `HEAD` before a merge rewrites the working tree, and return to live once the merge is committed (`tricks commit` or `install`) or aborted. This implements "deployed revisions are untouched until the merged result is committed" for dev-mode skills.
+5. **Rollback pins** the skill (`update = "pinned"`) so the next check cannot undo it.
+6. **`init` runs `git init`** when not inside a repository, instead of failing.
+7. **`publish` exits non-zero when blocked**, including `--dry-run` (CI-friendly); the JSON report is still printed.
+8. **Root `LICENSE` in the target** is copied from the workspace root if present; otherwise none is generated (skills carry their own).
+9. **Untagged publishes** don't write `metadata.version`; `apm.yml` then carries the previous tag (or `0.0.0`).
+10. **Publish with `--pr`** commits on `New Tricks/publish-<version>` and does not tag (tag after merging).
+11. **VS Code session token** is passed as `TRICKS_VSCODE_TOKEN` and consulted *after* env vars and `gh auth token`, matching §13's order.
+12. **Workspace skills deploy under their workspace name** (the `[skills.<name>]` key).
+13. **Config lives in `~/.config/newtricks`** on macOS and Linux (`%APPDATA%` on Windows); data in the platform-native, non-hidden locations from §4.
+14. **`install` inside a workspace** dev-links workspace skills; `-g` targets the workbench.
+15. **`vendor`** sets `track = "latest"` unless a branch was given explicitly, and `update = "review"`.
+16. **Lint severities**: NT203 (absolute/home paths) is a warning; NT305 (first/second-person description) was added because the spec's example config references it; unknown keys are info (NT402).
+17. **Licence**: frontmatter like "Complete terms in LICENSE.txt" defers to the file; no licence found ⇒ block class; local originals are exempt from the licence gate (it applies to vendored skills, per §11).
+18. **Copilot is always copy-mode**: one `copilot` agent serves both VS Code (symlink bug) and the CLI through `~/.copilot/skills`.
+19. **Name and placeholders**: renamed from *skillbench* to **New Tricks** (command `tricks`) because "SkillBench" is an existing brand shipping agent-skill marketplaces. The GitHub org `new-tricks` is free (repo placeholder `New-Tricks/Tricks`); the extension publisher placeholder is `newtricks` — register both before release.
+20. **`New Tricks:` URIs** encode the skill ID as base64url (IDs contain `//`, which broke parse/serialize round trips).
+21. **Search refreshes stale sources on demand** (24 h default); the first search on a new machine is the slow one.
+22. **`tricks statusline`** is the agent status-line integration (cache-only; forced offline).
+23. **All git access shells out to the system `git`**, reads included; no embedded git library (§4 allowed one for fast reads). Simpler, one git behaviour everywhere; performance has been adequate.
+24. **Concurrency** uses `std` file locks (Rust ≥ 1.89): one per upstream source around clone/fetch, one per workspace around merges and publishes, plus SQLite WAL with a busy timeout. This covers the CLI and the extension's server running at the same time.
+
+## Known gaps
+
+- **Not exercised against live GitHub writes:** `tricks pr` (non-dry-run: creates a public fork and PR), `publish --push/--pr`, `self-update` (no release exists yet). Dry-run and local paths are tested.
+- **Windows**: compiled logic is cfg-gated and CI runs the suite on Windows, but nothing has been run on a Windows machine yet. Link-asserting integration tests are Unix-only by design.
+- **Cursor hidden-directory check (§17)** not run: needs an authenticated Cursor agent. The Linux rule is coded conservatively (copy when the target path is hidden).
+- **Trust facet** lacks "starred by you".
+- **NT1xx** not yet cross-checked against the official `skills-ref` fixtures.
+- **Bundled agent skill** is installed with `init --agent-skill`; the "offer on first run" prompt is not implemented.
+- **Rename following** is implemented for workspace upstream merges; a workbench install whose upstream path moves reports an error instead.
+- **`.well-known`** installs support `skill-md` entries only (not archives).
+- **Extension UI** (Discover webview, publish panel, merge editor wiring) is covered by activation/RPC tests but not by UI automation.
+- **macOS signing/notarization** step is a placeholder in `release.yml`.

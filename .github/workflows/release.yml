@@ -1,0 +1,93 @@
+name: Release
+
+# Tag vX.Y.Z to build signed-off binaries, checksums, platform VSIX packages, and
+# (when secrets are configured) publish to the VS Code Marketplace and Open VSX.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest, vsce: darwin-arm64 }
+          - { target: x86_64-apple-darwin, os: macos-latest, vsce: darwin-x64 }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, vsce: linux-x64 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, vsce: linux-arm64 }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, vsce: win32-x64 }
+          - { target: aarch64-pc-windows-msvc, os: windows-latest, vsce: win32-arm64 }
+    runs-on: ${{ matrix.os }}
+    env:
+      APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=tricks
+          [[ "${{ matrix.target }}" == *windows* ]] && exe=tricks.exe
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/$exe" dist/
+          cp LICENSE README.md dist/
+          tar -C dist -czf "tricks-${{ matrix.target }}.tar.gz" "$exe" LICENSE README.md
+          if command -v sha256sum >/dev/null; then sha256sum "tricks-${{ matrix.target }}.tar.gz" > "tricks-${{ matrix.target }}.tar.gz.sha256";
+          else shasum -a 256 "tricks-${{ matrix.target }}.tar.gz" > "tricks-${{ matrix.target }}.tar.gz.sha256"; fi
+          # Stage the binary for the platform-specific VSIX.
+          mkdir -p "extension/bin" && cp "dist/$exe" "extension/bin/$exe"
+      # macOS signing/notarization: set APPLE_* secrets to enable (see packaging/README.md).
+      - name: Sign macOS binary
+        if: startsWith(matrix.os, 'macos') && env.APPLE_CERT_P12 != ''
+        run: echo "codesign/notarize step goes here (see packaging/README.md)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build platform VSIX
+        shell: bash
+        working-directory: extension
+        run: |
+          npm ci --no-audit --no-fund
+          npx tsc -p .
+          npx vsce package --no-dependencies --target ${{ matrix.vsce }} -o "../new-tricks-${{ matrix.vsce }}.vsix"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: |
+            tricks-*.tar.gz
+            tricks-*.tar.gz.sha256
+            new-tricks-*.vsix
+
+  release:
+    needs: binaries
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Publish to VS Code Marketplace
+        if: env.VSCE_PAT != ''
+        run: for f in artifacts/*.vsix; do npx @vscode/vsce publish --packagePath "$f" --pat "$VSCE_PAT"; done
+      - name: Publish to Open VSX
+        if: env.OVSX_PAT != ''
+        run: for f in artifacts/*.vsix; do npx ovsx publish "$f" --pat "$OVSX_PAT"; done

@@ -1,0 +1,34 @@
+//! tricks: the design-time workbench for agent skills.
+
+pub mod agents;
+pub mod cli;
+pub mod cli_ws;
+pub mod config;
+pub mod ctx;
+pub mod deploy;
+pub mod doctor;
+pub mod git;
+pub mod github;
+pub mod id;
+pub mod index;
+pub mod inspect;
+pub mod license;
+pub mod links;
+pub mod lint;
+pub mod lookup;
+pub mod merge;
+pub mod paths;
+pub mod pr;
+pub mod publish;
+pub mod resolve;
+pub mod risk;
+pub mod rpc;
+pub mod selfupdate;
+pub mod skill;
+pub mod sources;
+pub mod state;
+pub mod statusline;
+pub mod store;
+pub mod treehash;
+pub mod workbench;
+pub mod workspace;

@@ -1,0 +1,8 @@
+src/**
+out/test/**
+**/*.map
+tsconfig.json
+.npmrc
+node_modules/**
+media/icon-color.svg
+.vscode-test/**

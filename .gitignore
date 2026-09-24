@@ -1,0 +1,8 @@
+/target
+/dist
+extension/node_modules
+extension/out
+extension/bin
+extension/*.vsix
+.DS_Store
+extension/.vscode-test

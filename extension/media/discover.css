@@ -1,0 +1,22 @@
+body { padding: 0 8px 8px; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); }
+form { position: sticky; top: 0; background: var(--vscode-sideBar-background); padding: 8px 0 6px; z-index: 1; }
+input[type=search] { width: 100%; box-sizing: border-box; padding: 4px 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); }
+input[type=search]:focus { outline: 1px solid var(--vscode-focusBorder); }
+.facets { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 6px; align-items: center; }
+select { color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, transparent); font-size: 0.9em; }
+label { font-size: 0.9em; display: inline-flex; align-items: center; gap: 3px; }
+#status { color: var(--vscode-descriptionForeground); font-size: 0.85em; margin: 4px 0; }
+.card { border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,.2)); padding: 8px 0; }
+.head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.name { font-weight: 600; }
+.id { color: var(--vscode-descriptionForeground); font-size: 0.85em; word-break: break-all; }
+.desc { margin: 4px 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.tag { font-size: 0.8em; padding: 0 5px; border-radius: 3px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.tag.trust-official, .tag.trust-yours, .tag.trust-org { background: var(--vscode-testing-iconPassed, #388a34); color: #fff; }
+.tag.lic-block, .tag.lic-non-commercial { background: var(--vscode-inputValidation-errorBackground, #5a1d1d); color: var(--vscode-foreground); }
+.tag.risk { background: transparent; border: 1px solid var(--vscode-editorWarning-foreground, #cca700); color: var(--vscode-editorWarning-foreground, #cca700); }
+.tag.state { background: transparent; border: 1px solid var(--vscode-focusBorder); }
+.actions { display: flex; gap: 4px; flex-wrap: wrap; }
+button { font-size: 0.85em; padding: 2px 8px; color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); border: none; cursor: pointer; }
+button:hover { background: var(--vscode-button-secondaryHoverBackground); }
