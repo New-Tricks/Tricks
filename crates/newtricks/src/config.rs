@@ -57,11 +57,20 @@ pub struct Settings {
     pub agents: Vec<String>,
     pub fetch_interval: String,
     pub default_sources: bool,
+    /// Live-query catalogs consulted on each search.
+    pub live: Vec<String>,
 }
+
+pub const LIVE_CATALOGS: &[&str] = &["skills.sh", "tessl", "clawhub", "github"];
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { agents: vec!["claude".into()], fetch_interval: "24h".into(), default_sources: true }
+        Settings {
+            agents: vec!["claude".into()],
+            fetch_interval: "24h".into(),
+            default_sources: true,
+            live: LIVE_CATALOGS.iter().map(|s| s.to_string()).collect(),
+        }
     }
 }
 

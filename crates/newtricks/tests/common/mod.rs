@@ -2,8 +2,12 @@
 //! repositories served through TRICKS_HOST_MAP.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
 
 pub struct Sandbox {
     pub dir: tempfile::TempDir,
@@ -12,6 +16,8 @@ pub struct Sandbox {
     pub data: PathBuf,
     pub fixtures: PathBuf,
     pub identity: Option<String>,
+    /// Extra environment for every command (applied last).
+    pub env: Vec<(String, String)>,
 }
 
 pub fn git(dir: &Path, args: &[&str]) -> String {
@@ -43,6 +49,7 @@ impl Sandbox {
             fixtures: root.join("fixtures"),
             dir,
             identity: None,
+            env: Vec::new(),
         };
         for d in [&s.home, &s.config, &s.data, &s.fixtures] {
             std::fs::create_dir_all(d).unwrap();
@@ -66,6 +73,8 @@ impl Sandbox {
             .env("TRICKS_NO_GH", "1")
             .env("TRICKS_NO_API", "1")
             .env("TRICKS_SKILLS_SH_URL", "http://127.0.0.1:9")
+            .env("TRICKS_TESSL_URL", "http://127.0.0.1:9")
+            .env("TRICKS_CLAWHUB_URL", "http://127.0.0.1:9")
             .env_remove("GITHUB_TOKEN")
             .env_remove("TRICKS_GITHUB_TOKEN")
             .env_remove("TRICKS_LINK_MODE")
@@ -80,6 +89,9 @@ impl Sandbox {
             None => {
                 c.env_remove("TRICKS_IDENTITY");
             }
+        }
+        for (k, v) in &self.env {
+            c.env(k, v);
         }
         c.output().unwrap()
     }
@@ -165,4 +177,55 @@ pub fn commit_all(repo: &Path, msg: &str) -> String {
     git(repo, &["add", "-A"]);
     git(repo, &["commit", "-qm", msg]);
     git(repo, &["rev-parse", "HEAD"])
+}
+
+/// Paths (including the query string) → response bodies, mutable while serving.
+pub type Files = Arc<Mutex<HashMap<String, Vec<u8>>>>;
+
+/// Minimal HTTP/1.1 server answering GETs from `files` (404 otherwise); returns its base URL.
+pub fn serve(files: Files) -> String {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in l.incoming().flatten() {
+            let files = files.clone();
+            std::thread::spawn(move || {
+                let mut s = stream;
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut line = String::new();
+                if r.read_line(&mut line).is_err() {
+                    return;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h.trim().is_empty() {
+                        break;
+                    }
+                }
+                let body = files.lock().unwrap().get(&path).cloned();
+                let _ = match body {
+                    Some(b) => {
+                        let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", b.len());
+                        s.write_all(&b)
+                    }
+                    None => write!(s, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                };
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+pub fn zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut z = zip::ZipWriter::new(&mut buf);
+        for (p, c) in files {
+            z.start_file(*p, zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(c).unwrap();
+        }
+        z.finish().unwrap();
+    }
+    buf.into_inner()
 }

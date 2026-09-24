@@ -723,7 +723,7 @@ pub fn index_pointers(ctx: &Ctx, key: &str) -> Result<usize> {
 
 // ---------------------------------------------------------------- live-query adapters
 
-fn live_fresh(ctx: &Ctx, adapter: &str, q: &str) -> Result<bool> {
+pub(crate) fn live_fresh(ctx: &Ctx, adapter: &str, q: &str) -> Result<bool> {
     let at: Option<i64> = ctx
         .state
         .conn
@@ -732,13 +732,13 @@ fn live_fresh(ctx: &Ctx, adapter: &str, q: &str) -> Result<bool> {
     Ok(at.map(|a| now() - a < LIVE_TTL_SECS).unwrap_or(false))
 }
 
-fn live_mark(ctx: &Ctx, adapter: &str, q: &str) -> Result<()> {
+pub(crate) fn live_mark(ctx: &Ctx, adapter: &str, q: &str) -> Result<()> {
     ctx.state.conn.execute("INSERT OR REPLACE INTO live_cache(adapter, query, at) VALUES(?1,?2,?3)", params![adapter, q, now()])?;
     Ok(())
 }
 
 /// Ensure repositories are indexed recently enough (bounded, parallel work for live adapters).
-fn ensure_repos_indexed(ctx: &Ctx, repos: &[SourceId]) {
+pub(crate) fn ensure_repos_indexed(ctx: &Ctx, repos: &[SourceId]) {
     let interval = crate::workbench::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
     let stale: Vec<(SourceId, Option<Vec<String>>, String)> = repos
         .iter()
@@ -749,6 +749,37 @@ fn ensure_repos_indexed(ctx: &Ctx, repos: &[SourceId]) {
         match r {
             Ok(_) => {
                 let _ = ctx.state.mark_fetched(&format!("index:{src}"));
+            }
+            Err(e) => ctx.ui.warn(&format!("{src}: {e:#}")),
+        }
+    }
+}
+
+/// Index only the pointed-to skill directories of each repository (catalog pointers
+/// often land in large application repos). Freshness is tracked per directory.
+pub(crate) fn ensure_pointers_indexed(ctx: &Ctx, pointers: &[(SourceId, String)]) {
+    let interval = crate::workbench::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
+    let mut by_repo: BTreeMap<SourceId, Vec<String>> = BTreeMap::new();
+    for (src, dir) in pointers {
+        let key = format!("index:{src}//{dir}");
+        let repo_fresh = !ctx.state.is_stale(&format!("index:{src}"), interval).unwrap_or(true);
+        if repo_fresh || !ctx.state.is_stale(&key, interval).unwrap_or(true) {
+            continue;
+        }
+        let e = by_repo.entry(src.clone()).or_default();
+        if !e.contains(dir) {
+            e.push(dir.clone());
+        }
+    }
+    let jobs: Vec<(SourceId, Option<Vec<String>>, String)> =
+        by_repo.into_iter().map(|(s, d)| (s.clone(), Some(d), s.to_string())).collect();
+    let dirs: BTreeMap<String, Vec<String>> = jobs.iter().map(|(s, d, _)| (s.to_string(), d.clone().unwrap_or_default())).collect();
+    for (src, r) in index_repos(ctx, &jobs) {
+        match r {
+            Ok(_) => {
+                for d in dirs.get(&src.to_string()).into_iter().flatten() {
+                    let _ = ctx.state.mark_fetched(&format!("index:{src}//{d}"));
+                }
             }
             Err(e) => ctx.ui.warn(&format!("{src}: {e:#}")),
         }

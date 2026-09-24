@@ -80,6 +80,11 @@ impl State {
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
+        // Additive migrations for databases created by earlier versions.
+        let has_signals: bool = conn.prepare("SELECT 1 FROM pragma_table_info('listings') WHERE name='signals'")?.exists([])?;
+        if !has_signals {
+            conn.execute_batch("ALTER TABLE listings ADD COLUMN signals TEXT")?;
+        }
         Ok(State { conn })
     }
 

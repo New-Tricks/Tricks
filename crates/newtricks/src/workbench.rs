@@ -147,8 +147,8 @@ fn migrate_id(ctx: &Ctx, lock: &mut WorkbenchLock, old_s: &str, old: &SkillId, n
 
 pub fn add(ctx: &Ctx, input: &str, agent_names: &[String], policy: Option<Policy>, copy: bool, shadow: bool) -> Result<AddReport> {
     let spec = crate::lookup::spec_from_input(ctx, input)?;
-    if spec.source.repo_path == ".well-known/agent-skills" {
-        return add_wellknown(ctx, &spec, agent_names, copy, shadow);
+    if crate::hosted::kind(&SkillId::new(spec.source.clone(), &spec.selector)).is_some() {
+        return add_hosted(ctx, &spec, agent_names, policy, copy, shadow);
     }
     let r = resolve_skill(ctx, &spec, Fetch::IfStale)?;
     if let Some(p) = policy
@@ -213,11 +213,16 @@ pub fn add(ctx: &Ctx, input: &str, agent_names: &[String], policy: Option<Policy
     })
 }
 
-fn add_wellknown(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], copy: bool, shadow: bool) -> Result<AddReport> {
+fn add_hosted(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], policy: Option<Policy>, copy: bool, shadow: bool) -> Result<AddReport> {
     let id = SkillId::new(spec.source.clone(), &spec.selector);
-    let (origin, entry) = crate::wellknown::lookup(ctx, &id.to_string())?;
-    let (tmp, _url, digest) = crate::wellknown::materialize(ctx, &origin, &entry)?;
-    let (dir, tree) = store::from_dir(ctx, tmp.path())?;
+    let f = match crate::hosted::fetch(ctx, &id, spec.reference.as_deref().filter(|r| *r != "latest"))? {
+        crate::hosted::Outcome::Fetched(f) => f,
+        crate::hosted::Outcome::Redirect(git_id) => {
+            ctx.ui.info(&format!("{id} is hosted on GitHub; installing {git_id}"));
+            return add(ctx, &git_id, agent_names, policy, copy, shadow);
+        }
+    };
+    let (dir, tree) = store::from_dir(ctx, f.dir.path())?;
     let m = load_manifest(ctx)?;
     let agents_sel = if agent_names.is_empty() { default_agents(&m)? } else { agents::parse_list(agent_names)? };
     let text = std::fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
@@ -234,7 +239,7 @@ fn add_wellknown(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], copy: bool
                 name: name.clone(),
                 target: dir.clone(),
                 tree: Some(tree.clone()),
-                commit: Some(digest.clone()),
+                commit: Some(f.commit.clone()),
                 force_copy: copy,
                 shadow,
             },
@@ -247,45 +252,48 @@ fn add_wellknown(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], copy: bool
     if !agent_names.is_empty() {
         wb.agents = Some(agents_sel.iter().map(|a| a.id.to_string()).collect());
     }
+    wb.update = policy;
     config::table_mut(&mut doc, &["skills"]).insert(&id.to_string(), config::to_inline(&wb)?);
     config::save_doc(&path, &doc)?;
     let mut lock = load_lock(ctx)?;
-    lock.upsert(wellknown_locked(&id, &name, &digest, &tree));
+    lock.upsert(hosted_locked(&id, &name, &f, &tree));
     lock.save(&ctx.paths.workbench_lock())?;
     Ok(AddReport {
         id: id.to_string(),
-        canonical: id.to_string(),
+        canonical: format!("{id}@{}", f.label),
         name,
-        commit: digest,
+        commit: f.commit.clone(),
         tree,
         agents: agents_sel.iter().map(|a| a.id.to_string()).collect(),
         placements,
-        license_class: Some(crate::license::detect(&crate::inspect::gather_dir(&dir)).class),
+        license_class: Some(crate::hosted::license(&id, &dir).class),
         risk: RiskReport::scan_dir(&dir).summary(),
     })
 }
 
-fn wellknown_locked(id: &SkillId, name: &str, digest: &str, tree: &str) -> LockedSkill {
-    let short = digest.trim_start_matches("sha256:");
+fn hosted_locked(id: &SkillId, name: &str, f: &crate::hosted::Fetched, tree: &str) -> LockedSkill {
     LockedSkill {
         id: id.to_string(),
         name: name.to_string(),
-        ref_kind: "digest".into(),
-        ref_name: short[..12.min(short.len())].to_string(),
-        commit: digest.to_string(),
+        ref_kind: f.ref_kind.into(),
+        ref_name: f.label.clone(),
+        commit: f.commit.clone(),
         tree: tree.to_string(),
         path: None,
     }
 }
 
-/// A newer published version of a well-known skill (by digest), after refreshing its site's index.
-fn wellknown_newer(ctx: &Ctx, locked: &LockedSkill, fetch: bool) -> Result<Option<(String, crate::wellknown::Entry)>> {
-    let (origin, _) = crate::wellknown::lookup(ctx, &locked.id)?;
-    if fetch {
-        let _ = crate::sources::refresh(ctx, false, Some(&origin));
+/// Fetch a hosted skill for update/reinstall and put it in the store.
+fn fetch_hosted_into_store(ctx: &Ctx, id: &SkillId, version: Option<&str>) -> Result<(crate::hosted::Fetched, std::path::PathBuf, String)> {
+    match crate::hosted::fetch(ctx, id, version)? {
+        crate::hosted::Outcome::Fetched(f) => {
+            let (dir, tree) = store::from_dir(ctx, f.dir.path())?;
+            Ok((f, dir, tree))
+        }
+        crate::hosted::Outcome::Redirect(git_id) => {
+            bail!("{id} moved to GitHub ({git_id}); remove it and `tricks add {git_id}`")
+        }
     }
-    let (origin, entry) = crate::wellknown::lookup(ctx, &locked.id)?;
-    Ok(entry.digest.clone().filter(|d| d != &locked.commit).map(|_| (origin, entry)))
 }
 
 /// Find an installed skill by canonical id, short id or name.
@@ -449,11 +457,17 @@ fn install_one(
     frozen: bool,
 ) -> Result<InstallItem> {
     let id = SkillId::parse_canonical(id_s)?;
-    if id.source.repo_path == ".well-known/agent-skills" {
-        let l = lock.get(id_s).cloned().context("well-known skill missing from lock; re-add it")?;
-        let dir = store::entry_path(ctx, &l.tree);
+    if crate::hosted::kind(&id).is_some() {
+        let l = lock.get(id_s).cloned().context("hosted skill missing from lock; re-add it")?;
+        let mut dir = store::entry_path(ctx, &l.tree);
         if !dir.exists() {
-            bail!("store entry for {id_s} missing; re-add it");
+            // Re-fetch the locked version and insist on identical content.
+            let version = (l.ref_kind == "version").then_some(l.ref_name.as_str());
+            let (_, d, tree) = fetch_hosted_into_store(ctx, &id, version)?;
+            if tree != l.tree {
+                bail!("{id_s}: the catalog now serves different content for {} than the lock records; run `tricks update`", l.ref_name);
+            }
+            dir = d;
         }
         let agents_sel = skill_agents(m, entry)?;
         let n = sync_placements(
@@ -468,19 +482,18 @@ fn install_one(
         )?;
         if !frozen
             && !matches!(entry.policy(), Policy::Paused | Policy::Pinned)
-            && let Ok(Some((_, e))) = wellknown_newer(ctx, &l, true)
+            && let Ok(Some((label, commit))) = crate::hosted::newer(ctx, &l, true)
         {
-            let d = e.digest.unwrap_or_default();
             ctx.state.conn.execute(
-                "INSERT OR REPLACE INTO pending_updates(skill, from_commit, to_commit, to_tree, ref_kind, ref_name, risk, at) VALUES(?1,?2,?3,NULL,'digest',?4,'',?5)",
-                params![id_s, l.commit, d, d.trim_start_matches("sha256:").chars().take(12).collect::<String>(), now()],
+                "INSERT OR REPLACE INTO pending_updates(skill, from_commit, to_commit, to_tree, ref_kind, ref_name, risk, at) VALUES(?1,?2,?3,NULL,?4,?5,'',?6)",
+                params![id_s, l.commit, commit, l.ref_kind, label, now()],
             )?;
             return Ok(InstallItem {
                 id: id_s.into(),
-                name: l.name,
+                name: l.name.clone(),
                 action: "update-ready".into(),
                 commit: Some(l.commit),
-                detail: Some("new digest published".into()),
+                detail: Some(format!("{} → {label}", l.ref_name)),
             });
         }
         return Ok(InstallItem {
@@ -577,7 +590,7 @@ fn auto_deployed(ctx: &Ctx, id: &str) -> Result<Option<(String, String)>> {
 }
 
 fn short(c: &str) -> &str {
-    &c[..c.len().min(9)]
+    crate::id::short_commit(c)
 }
 
 /// Risk and file changes between the locked revision and a candidate.
@@ -632,16 +645,15 @@ pub fn update(ctx: &Ctx, only: Option<&str>) -> Result<Vec<UpdateItem>> {
         if only.is_none() && matches!(entry.policy(), Policy::Pinned | Policy::Paused) {
             continue;
         }
-        if id.source.repo_path == ".well-known/agent-skills" {
+        if crate::hosted::kind(&id).is_some() {
             let Some(locked) = lock.get(&id_s).cloned() else { continue };
-            let Some((origin, e)) = wellknown_newer(ctx, &locked, true)? else { continue };
-            let (tmp, _url, digest) = crate::wellknown::materialize(ctx, &origin, &e)?;
-            let (dir, tree) = store::from_dir(ctx, tmp.path())?;
+            let Some((to_ref, _)) = crate::hosted::newer(ctx, &locked, true)? else { continue };
+            let version = (locked.ref_kind == "version").then_some(to_ref.as_str());
+            let (f, dir, tree) = fetch_hosted_into_store(ctx, &id, version)?;
             let old_dir = store::entry_path(ctx, &locked.tree);
             let changes: Vec<String> =
                 RiskReport::scan_dir(&dir).diff_from(&RiskReport::scan_dir(&old_dir)).into_iter().map(|l| format!("risk: {l}")).collect();
-            let to_ref = digest.trim_start_matches("sha256:").chars().take(12).collect::<String>();
-            let mut details = vec![format!("{}: digest {} → {to_ref}", locked.name, locked.ref_name)];
+            let mut details = vec![format!("{}: {} → {}", locked.name, locked.ref_name, f.label)];
             details.extend(changes.iter().map(|c| format!("  {c}")));
             let applied = ctx.confirm(&format!("Apply update to {}?", locked.name), &details)?;
             if applied {
@@ -653,19 +665,19 @@ pub fn update(ctx: &Ctx, only: Option<&str>) -> Result<Vec<UpdateItem>> {
                     &agents_sel,
                     &dir,
                     &tree,
-                    &digest,
+                    &f.commit,
                     entry.mode.as_deref() == Some("copy"),
                 )?;
-                lock.upsert(wellknown_locked(&id, &locked.name, &digest, &tree));
+                lock.upsert(hosted_locked(&id, &locked.name, &f, &tree));
                 clear_pending(ctx, &id_s)?;
             }
             out.push(UpdateItem {
                 id: id_s.clone(),
                 name: locked.name.clone(),
                 from: locked.commit.clone(),
-                to: digest.clone(),
+                to: f.commit.clone(),
                 from_ref: locked.ref_name.clone(),
-                to_ref,
+                to_ref: f.label.clone(),
                 changes,
                 applied,
             });
@@ -743,18 +755,19 @@ pub fn outdated(ctx: &Ctx) -> Result<Vec<Pending>> {
         }
         let Ok(id) = SkillId::parse_canonical(id_s) else { continue };
         let Some(locked) = lock.get(id_s) else { continue };
-        if id.source.repo_path == ".well-known/agent-skills" {
-            if let Ok(Some((_, e))) = wellknown_newer(ctx, locked, true) {
-                let d = e.digest.unwrap_or_default();
-                out.push(Pending {
+        if crate::hosted::kind(&id).is_some() {
+            match crate::hosted::newer(ctx, locked, true) {
+                Ok(Some((label, commit))) => out.push(Pending {
                     id: id_s.clone(),
                     name: locked.name.clone(),
                     from_ref: locked.ref_name.clone(),
-                    to_ref: d.trim_start_matches("sha256:").chars().take(12).collect(),
-                    to_commit: d,
+                    to_ref: label,
+                    to_commit: commit,
                     policy: policy.as_str().into(),
-                    details: vec!["new digest published in the site's index".into()],
-                });
+                    details: vec!["new version published in the catalog".into()],
+                }),
+                Ok(None) => {}
+                Err(e) => ctx.ui.warn(&format!("{id_s}: {e:#}")),
             }
             continue;
         }

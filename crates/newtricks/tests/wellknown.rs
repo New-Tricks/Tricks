@@ -6,47 +6,10 @@ mod common;
 use common::*;
 use sha2::Digest;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
-type Files = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 /// (name, type, url, body, digest override)
 type IndexEntry<'a> = (&'a str, &'a str, &'a str, &'a [u8], Option<String>);
-
-fn serve(files: Files) -> String {
-    let l = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = l.local_addr().unwrap();
-    std::thread::spawn(move || {
-        for stream in l.incoming().flatten() {
-            let files = files.clone();
-            std::thread::spawn(move || {
-                let mut s = stream;
-                let mut r = BufReader::new(s.try_clone().unwrap());
-                let mut line = String::new();
-                if r.read_line(&mut line).is_err() {
-                    return;
-                }
-                let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
-                loop {
-                    let mut h = String::new();
-                    if r.read_line(&mut h).is_err() || h.trim().is_empty() {
-                        break;
-                    }
-                }
-                let body = files.lock().unwrap().get(&path).cloned();
-                let _ = match body {
-                    Some(b) => {
-                        let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", b.len());
-                        s.write_all(&b)
-                    }
-                    None => write!(s, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
-                };
-            });
-        }
-    });
-    format!("http://{addr}")
-}
 
 fn digest(b: &[u8]) -> String {
     format!("sha256:{}", hex::encode(sha2::Sha256::digest(b)))
@@ -63,19 +26,6 @@ fn tar_gz(files: &[(&str, &[u8])]) -> Vec<u8> {
         b.append(&h, *c).unwrap();
     }
     b.into_inner().unwrap().finish().unwrap()
-}
-
-fn zip(files: &[(&str, &[u8])]) -> Vec<u8> {
-    let mut buf = std::io::Cursor::new(Vec::new());
-    {
-        let mut z = zip::ZipWriter::new(&mut buf);
-        for (p, c) in files {
-            z.start_file(*p, zip::write::SimpleFileOptions::default()).unwrap();
-            z.write_all(c).unwrap();
-        }
-        z.finish().unwrap();
-    }
-    buf.into_inner()
 }
 
 fn md(name: &str, v: &str) -> Vec<u8> {
