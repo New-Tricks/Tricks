@@ -282,7 +282,7 @@ base_tree = "9f3c…"
 | Facet | Derived from |
 |---|---|
 | Listed in / owner / org | catalogs, repository |
-| Trust: official · your org · starred by you · unknown | owner, the user's GitHub identity and org membership |
+| Trust: yours · your org · official · starred by you · unknown | owner, the user's GitHub identity, org membership and starred repositories |
 | Agent compatibility | frontmatter fields, agent-specific keys |
 | Risk surface: scripts, `allowed-tools`, network references | file tree and content scan |
 | Popularity: installs (per catalog), stars | catalogs, GitHub |
@@ -444,11 +444,11 @@ Users may operate on the branches with git directly; New Tricks picks up the res
 
 ### Lint
 
-Ruff-style rules with stable codes, default severities, configuration under `[lint]`, per-skill overrides, and inline disables via frontmatter `metadata` (`tricks-lint-disable: NT203`, stripped at publish). Implemented natively in Rust; NT1xx is tested against the official `skills-ref` fixtures.
+Ruff-style rules with stable codes, default severities, configuration under `[lint]`, per-skill overrides, and inline disables via frontmatter `metadata` (`tricks-lint-disable: NT203`, stripped at publish). `strict-spec = true` (or `tricks lint --strict`) makes any frontmatter key outside the Agent Skills spec an error, matching the reference validator exactly. Implemented natively in Rust; NT1xx is tested against the official `skills-ref` fixtures.
 
 | Family | Examples | Default |
 |---|---|---|
-| **NT1xx** Spec conformance ([Agent Skills spec](https://agentskills.io/specification)) | `name` format; name ≠ folder; `description` empty or > 1024; `compatibility` > 500; `metadata` not a string map | error |
+| **NT1xx** Spec conformance ([Agent Skills spec](https://agentskills.io/specification), cross-checked against the `skills-ref` test suite) | `name` format (lowercase letters of any script, digits, single hyphens; NFKC-normalized); name ≠ folder; `description` empty or > 1024; `compatibility` > 500; `metadata` not a string map; `skill.md` instead of `SKILL.md` (NT110, warning) | error |
 | **NT2xx** Structure | broken relative links; missing referenced scripts; absolute or `~/` paths; references nested > 1 level; `SKILL.md` > 500 lines; body > ~5k tokens | error for broken links/files; warn for size/nesting |
 | **NT3xx** Triggering quality | description lacks "use when…"; description < ~60 chars; duplicate `name` in workspace; near-duplicate descriptions competing for triggers | warn; duplicate name is error |
 | **NT4xx** Agent compatibility | agent-specific keys without that agent targeted; unknown keys (preserved); non-ASCII frontmatter (APM rejects it) | warn / info |

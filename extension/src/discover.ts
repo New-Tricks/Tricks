@@ -31,7 +31,7 @@ export class DiscoverView implements vscode.WebviewViewProvider {
     <input id="q" type="search" placeholder="Search skills (e.g. pdf forms, code review)" autofocus>
     <div class="facets">
       <select id="agent" title="Agent"><option value="">any agent</option><option>claude</option><option>codex</option><option>copilot</option><option>cursor</option></select>
-      <select id="trust" title="Trust"><option value="">any trust</option><option>official</option><option>yours</option><option>org</option><option>unknown</option></select>
+      <select id="trust" title="Trust"><option value="">any trust</option><option>yours</option><option>org</option><option>official</option><option>starred</option><option>unknown</option></select>
       <select id="license" title="Licence"><option value="">any licence</option><option value="allow">open</option><option value="weak-copyleft">weak copyleft</option><option value="strong-copyleft">strong copyleft</option><option value="unknown">unknown</option><option value="block">restricted</option></select>
       <label><input id="noScripts" type="checkbox"> no scripts</label>
       <label><input id="installed" type="checkbox"> installed</label>

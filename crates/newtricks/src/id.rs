@@ -284,13 +284,42 @@ pub fn parse_source_input(input: &str) -> Result<SourceId> {
 }
 
 /// Validate a skill name per the Agent Skills spec.
+/// NFKC-normalized, trimmed skill name (matches the `skills-ref` reference validator).
+pub fn normalize_name(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    name.trim().nfkc().collect()
+}
+
+/// Problems with a skill name per the Agent Skills spec as implemented by `skills-ref`:
+/// 1-64 characters, lowercase, letters (any script), digits and single hyphens.
+pub fn name_problems(name: &str) -> Vec<String> {
+    let n = normalize_name(name);
+    let mut v = Vec::new();
+    if n.is_empty() {
+        v.push("must be a non-empty string".into());
+        return v;
+    }
+    let len = n.chars().count();
+    if len > 64 {
+        v.push(format!("exceeds 64 character limit ({len} chars)"));
+    }
+    if n != n.to_lowercase() {
+        v.push("must be lowercase".into());
+    }
+    if n.starts_with('-') || n.ends_with('-') {
+        v.push("cannot start or end with a hyphen".into());
+    }
+    if n.contains("--") {
+        v.push("cannot contain consecutive hyphens".into());
+    }
+    if !n.chars().all(|c| c.is_alphanumeric() || c == '-') {
+        v.push("contains invalid characters (only letters, digits and hyphens are allowed)".into());
+    }
+    v
+}
+
 pub fn valid_skill_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        && !name.starts_with('-')
-        && !name.ends_with('-')
-        && !name.contains("--")
+    name_problems(name).is_empty()
 }
 
 #[cfg(test)]
@@ -375,6 +404,11 @@ mod tests {
 
     #[test]
     fn skill_names() {
+        assert!(valid_skill_name("技能"));
+        assert!(valid_skill_name("мой-навык"));
+        assert!(!valid_skill_name("НАВЫК"));
+        assert!(!valid_skill_name("my_skill"));
+        assert!(valid_skill_name("cafe\u{301}"));
         assert!(valid_skill_name("pdf-processing"));
         assert!(!valid_skill_name("PDF"));
         assert!(!valid_skill_name("-pdf"));

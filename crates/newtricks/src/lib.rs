@@ -1,6 +1,7 @@
 //! tricks: the design-time workbench for agent skills.
 
 pub mod agents;
+pub mod agentskill;
 pub mod cli;
 pub mod cli_ws;
 pub mod config;
@@ -30,5 +31,6 @@ pub mod state;
 pub mod statusline;
 pub mod store;
 pub mod treehash;
+pub mod wellknown;
 pub mod workbench;
 pub mod workspace;

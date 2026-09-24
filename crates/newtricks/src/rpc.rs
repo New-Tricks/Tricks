@@ -192,6 +192,13 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
         "unlink" => to(crate::links::unlink(ctx, s(p, "skill"), s(p, "to"), b(p, "global"), b(p, "all"))?),
         "agents" => to(crate::agents::AGENTS.iter().map(|a| json!({ "id": a.id, "name": a.display, "userDir": ctx.paths.contract(&a.user_path(&ctx.paths.home)), "projectDir": a.project_dir, "mode": if a.follows_links(&ctx.paths.store()) { "link" } else { "copy" } })).collect::<Vec<_>>()),
         "doctor" => to(crate::doctor::run(ctx)?),
+        "agentSkill/status" => to(json!({ "status": crate::agentskill::status(ctx)?, "offer": crate::agentskill::should_offer(ctx)? })),
+        "agentSkill/install" => to(json!({ "paths": crate::agentskill::install(ctx, &strs(p, "agents"))? })),
+        "agentSkill/remove" => to(json!({ "paths": crate::agentskill::remove(ctx)? })),
+        "agentSkill/dismiss" => {
+            crate::agentskill::mark_offered(ctx)?;
+            Ok(json!({ "ok": true }))
+        }
         "workspace/init" => to(ws::init(ctx, s(p, "name"), b(p, "agentSkill"))?),
         "workspace/status" => to(ws::status(ctx, &ws::require(ctx)?)?),
         "workspace/vendor" => to(ws::vendor(ctx, &ws::require(ctx)?, req(p, "skill")?, s(p, "name"), s(p, "path"))?),

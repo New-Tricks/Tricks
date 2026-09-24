@@ -142,6 +142,10 @@ pub struct LockedSkill {
     pub ref_name: String,
     pub commit: String,
     pub tree: String,
+    /// Path of the skill at `commit` when it differs from the id's path (after an
+    /// upstream rename was followed but not yet updated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -221,6 +225,10 @@ pub struct PerSkillLint {
 pub struct LintConfig {
     #[serde(default)]
     pub ignore: Vec<String>,
+    /// Treat frontmatter keys outside the Agent Skills spec as errors, as the
+    /// `skills-ref` reference validator does (default: info/warning).
+    #[serde(default, rename = "strict-spec")]
+    pub strict_spec: bool,
     #[serde(default, rename = "per-skill")]
     pub per_skill: BTreeMap<String, PerSkillLint>,
 }

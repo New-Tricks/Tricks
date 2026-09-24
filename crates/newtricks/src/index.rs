@@ -235,8 +235,13 @@ pub struct SearchResult {
     pub score: f64,
 }
 
-/// Trust facet: official · yours · org · unknown.
-pub fn trust_for(owner: &str, identity: &Option<(String, Vec<String>)>) -> &'static str {
+/// Trust facet: yours · org · official · starred · unknown.
+pub fn trust_for(
+    owner: &str,
+    repo: &str,
+    identity: &Option<(String, Vec<String>)>,
+    starred: &std::collections::HashSet<String>,
+) -> &'static str {
     if let Some((login, orgs)) = identity {
         if owner.eq_ignore_ascii_case(login) {
             return "yours";
@@ -247,6 +252,9 @@ pub fn trust_for(owner: &str, identity: &Option<(String, Vec<String>)>) -> &'sta
     }
     if OFFICIAL_OWNERS.iter().any(|o| o.eq_ignore_ascii_case(owner)) {
         return "official";
+    }
+    if starred.contains(&repo.to_ascii_lowercase()) {
+        return "starred";
     }
     "unknown"
 }
@@ -271,6 +279,7 @@ pub fn fts_query(q: &str) -> Option<String> {
 
 pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<SearchResult>> {
     let identity = crate::sources::cached_identity(ctx, "github.com");
+    let starred = crate::sources::cached_starred(ctx, "github.com");
     let installed: BTreeSet<String> = crate::workbench::installed_ids(ctx).unwrap_or_default();
     let vendored: BTreeSet<String> = crate::workspace::vendored_upstreams(ctx).unwrap_or_default();
     let c = &ctx.state.conn;
@@ -387,7 +396,8 @@ pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<S
             compat,
             kind,
         ) = r;
-        let trust = trust_for(&owner, &identity).to_string();
+        let repo_path = source.split_once('/').map(|(_, r)| r).unwrap_or(&source).to_string();
+        let trust = trust_for(&owner, &repo_path, &identity, &starred).to_string();
         let (listed_in, installs, categories) = listings.get(&id).cloned().unwrap_or_default();
         let stars_n = stars.get(&source).copied();
         let agents: Vec<String> = compat.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
@@ -446,6 +456,7 @@ pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<S
         let trust_w = match trust.as_str() {
             "official" => 1.5,
             "yours" | "org" => 1.4,
+            "starred" => 1.25,
             _ => 1.0,
         };
         let pop_w = 1.0 + (1.0 + installs.unwrap_or(0) as f64).ln() / 10.0 + (1.0 + stars_n.unwrap_or(0) as f64).ln() / 20.0;
@@ -527,6 +538,17 @@ pub fn count(ctx: &Ctx) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_levels() {
+        let id = Some(("me".to_string(), vec!["acme".to_string()]));
+        let starred: std::collections::HashSet<String> = ["someone/cool-skills".to_string()].into_iter().collect();
+        assert_eq!(trust_for("me", "me/x", &id, &starred), "yours");
+        assert_eq!(trust_for("ACME", "acme/x", &id, &starred), "org");
+        assert_eq!(trust_for("anthropics", "anthropics/skills", &id, &starred), "official");
+        assert_eq!(trust_for("someone", "Someone/Cool-Skills", &id, &starred), "starred");
+        assert_eq!(trust_for("other", "other/x", &None, &starred), "unknown");
+    }
 
     #[test]
     fn fts_queries() {

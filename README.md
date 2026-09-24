@@ -31,6 +31,9 @@ tricks status
 tricks outdated && tricks update                 # review-first updates
 tricks rollback skill-creator                         # instant, and pinned
 
+# Let your agents drive New Tricks (pre-approves only read-only and branch-confined commands)
+tricks agent-skill --agents claude,codex
+
 # Try a skill inside a project without touching its git status
 tricks link anthropics/skills//webapp-testing --to ~/code/my-app --agents claude
 tricks unlink --all
@@ -51,7 +54,7 @@ tricks use changelog-writer@terse [--local]           # pick the deployed varian
 tricks update skill-creator                           # 3-way merge upstream changes into yours
 tricks update --continue | --abort                    # after resolving conflicts
 tricks diff skill-creator --from base --to working    # what did I change?
-tricks lint [--fix]
+tricks lint [--fix] [--strict]                            # --strict: keys outside the spec are errors, like skills-ref
 tricks pr skill-creator                               # send your change upstream
 ```
 

@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS merges(
   backup TEXT, conflicts TEXT, at INTEGER, PRIMARY KEY(workspace, skill));
 CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY, op TEXT, detail TEXT, status TEXT, at INTEGER);
 CREATE TABLE IF NOT EXISTS identity(host TEXT PRIMARY KEY, login TEXT, orgs TEXT, fetched_at INTEGER);
+CREATE TABLE IF NOT EXISTS starred(host TEXT NOT NULL, repo TEXT NOT NULL, PRIMARY KEY(host, repo));
 "#;
 
 pub fn now() -> i64 {

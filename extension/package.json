@@ -215,6 +215,11 @@
         "command": "tricks.statusActions",
         "title": "Status Actions",
         "category": "New Tricks"
+      },
+      {
+        "command": "tricks.agentSkill",
+        "title": "Install Agent Skill…",
+        "category": "New Tricks"
       }
     ],
     "menus": {

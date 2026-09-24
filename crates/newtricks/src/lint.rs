@@ -34,13 +34,14 @@ pub struct LintReport {
 
 pub const RULES: &[(&str, &str, &str)] = &[
     ("NT101", "error", "frontmatter `name` is missing"),
-    ("NT102", "error", "`name` must be 1-64 lowercase letters, digits and single hyphens"),
+    ("NT102", "error", "`name` must be 1-64 lowercase letters (any script), digits and single hyphens"),
     ("NT103", "error", "`name` must match the skill folder name"),
     ("NT104", "error", "`description` is missing or empty"),
     ("NT105", "error", "`description` exceeds 1024 characters"),
     ("NT106", "error", "`compatibility` exceeds 500 characters"),
     ("NT107", "error", "`metadata` must be a map of string keys to string values"),
     ("NT108", "error", "SKILL.md has no valid YAML frontmatter"),
+    ("NT110", "warning", "skill file is named `skill.md`; use `SKILL.md` (Claude Code only loads the uppercase name)"),
     ("NT201", "error", "broken relative link"),
     ("NT202", "error", "referenced script does not exist"),
     ("NT203", "warning", "absolute or home-relative path"),
@@ -103,21 +104,20 @@ pub struct LintContext<'a> {
     pub agents: Vec<String>,
     pub ignore: BTreeSet<String>,
     pub skill: &'a str,
+    /// Unknown frontmatter keys are errors (matches `skills-ref`).
+    pub strict: bool,
 }
 
 fn push(out: &mut Vec<Finding>, lc: &LintContext, code: &str, file: &str, line: Option<usize>, msg: String, fixable: bool) {
+    push_sev(out, lc, code, severity(code), file, line, msg, fixable)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_sev(out: &mut Vec<Finding>, lc: &LintContext, code: &str, sev: &str, file: &str, line: Option<usize>, msg: String, fixable: bool) {
     if lc.ignore.contains(code) {
         return;
     }
-    out.push(Finding {
-        code: code.into(),
-        severity: severity(code).into(),
-        skill: lc.skill.into(),
-        file: file.into(),
-        line,
-        message: msg,
-        fixable,
-    });
+    out.push(Finding { code: code.into(), severity: sev.into(), skill: lc.skill.into(), file: file.into(), line, message: msg, fixable });
 }
 
 fn fm_line(doc_text: &str, key: &str) -> Option<usize> {
@@ -128,9 +128,26 @@ fn fm_line(doc_text: &str, key: &str) -> Option<usize> {
 pub fn lint_dir(dir: &Path, lc: &LintContext) -> Vec<Finding> {
     let mut out = Vec::new();
     let folder = dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-    let skill_md = dir.join("SKILL.md");
+    // Prefer SKILL.md; accept skill.md (as `skills-ref` does) with a warning. Check the
+    // real on-disk name so case-insensitive filesystems don't hide the difference.
+    let entry = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n == "SKILL.md" || n == "skill.md")
+        .min();
+    let Some(file_name) = entry else {
+        push(&mut out, lc, "NT108", "SKILL.md", None, "missing required file SKILL.md".into(), false);
+        return out;
+    };
+    if file_name == "skill.md" {
+        push(&mut out, lc, "NT110", "skill.md", None, "rename to SKILL.md".into(), true);
+    }
+    let skill_md = dir.join(&file_name);
     let Ok(text) = std::fs::read_to_string(&skill_md) else {
-        push(&mut out, lc, "NT108", "SKILL.md", None, "SKILL.md is missing or unreadable".into(), false);
+        push(&mut out, lc, "NT108", "SKILL.md", None, "SKILL.md is unreadable".into(), false);
         return out;
     };
     let doc = SkillDoc::parse(&text);
@@ -140,7 +157,7 @@ pub fn lint_dir(dir: &Path, lc: &LintContext) -> Vec<Finding> {
     if let Some(d) = doc.metadata_str("tricks-lint-disable") {
         lc_ignore.extend(d.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).map(String::from));
     }
-    let lc = &LintContext { agents: lc.agents.clone(), ignore: lc_ignore, skill: lc.skill };
+    let lc = &LintContext { agents: lc.agents.clone(), ignore: lc_ignore, skill: lc.skill, strict: lc.strict };
 
     // NT1xx spec conformance
     if doc.frontmatter.is_none() || doc.parse_error.is_some() {
@@ -160,11 +177,12 @@ pub fn lint_dir(dir: &Path, lc: &LintContext) -> Vec<Finding> {
         match &doc.name {
             None => push(&mut out, lc, "NT101", "SKILL.md", Some(1), "add `name: <folder-name>`".into(), false),
             Some(n) => {
-                if !valid_skill_name(n) {
+                let problems = crate::id::name_problems(n);
+                if !problems.is_empty() {
                     let fixable = valid_skill_name(&n.to_lowercase());
-                    push(&mut out, lc, "NT102", "SKILL.md", fm_line(&text, "name"), format!("`{n}` is not a valid name"), fixable);
+                    push(&mut out, lc, "NT102", "SKILL.md", fm_line(&text, "name"), format!("`{n}` {}", problems.join("; ")), fixable);
                 }
-                if n != &folder && !folder.is_empty() {
+                if crate::id::normalize_name(n) != crate::id::normalize_name(&folder) && !folder.is_empty() {
                     let fixable = n.to_lowercase() == folder;
                     push(&mut out, lc, "NT103", "SKILL.md", fm_line(&text, "name"), format!("name `{n}` ≠ folder `{folder}`"), fixable);
                 }
@@ -236,9 +254,20 @@ pub fn lint_dir(dir: &Path, lc: &LintContext) -> Vec<Finding> {
                 push(&mut out, lc, "NT107", "SKILL.md", fm_line(&text, "metadata"), "values must be strings".into(), false);
             }
         }
-        // NT4xx agent compatibility
+        // NT4xx agent compatibility (strict-spec: anything outside the spec is an error)
         for k in doc.keys() {
-            if CLAUDE_KEYS.contains(&k.as_str()) {
+            if lc.strict && !SPEC_KEYS.contains(&k.as_str()) {
+                push_sev(
+                    &mut out,
+                    lc,
+                    "NT402",
+                    "error",
+                    "SKILL.md",
+                    fm_line(&text, &k),
+                    format!("`{k}` is not in the Agent Skills spec (strict-spec)"),
+                    false,
+                );
+            } else if CLAUDE_KEYS.contains(&k.as_str()) {
                 if !lc.agents.iter().any(|a| a == "claude") {
                     push(
                         &mut out,
@@ -355,6 +384,10 @@ fn jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
 }
 
 pub fn lint_workspace(ctx: &Ctx, ws: &Workspace, names: &[String]) -> Result<LintReport> {
+    lint_workspace_opts(ctx, ws, names, false)
+}
+
+pub fn lint_workspace_opts(ctx: &Ctx, ws: &Workspace, names: &[String], force_strict: bool) -> Result<LintReport> {
     let agents: Vec<String> = ws.agents(ctx)?.iter().map(|a| a.id.to_string()).collect();
     let mut rep = LintReport::default();
     let mut descs: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
@@ -375,7 +408,7 @@ pub fn lint_workspace(ctx: &Ctx, ws: &Workspace, names: &[String]) -> Result<Lin
         if let Some(p) = ws.manifest.lint.per_skill.get(name) {
             ignore.extend(p.ignore.iter().cloned());
         }
-        let lc = LintContext { agents: agents.clone(), ignore, skill: name };
+        let lc = LintContext { agents: agents.clone(), ignore, skill: name, strict: force_strict || ws.manifest.lint.strict_spec };
         rep.findings.extend(lint_dir(&dir, &lc));
     }
     let ignored = |name: &str, code: &str| {
@@ -433,12 +466,13 @@ pub fn lint_workspace(ctx: &Ctx, ws: &Workspace, names: &[String]) -> Result<Lin
 }
 
 /// Lint a directory outside a workspace.
-pub fn lint_path(dir: &Path) -> LintReport {
+pub fn lint_path(dir: &Path, strict: bool) -> LintReport {
     let name = dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
     let lc = LintContext {
         agents: vec!["claude".into(), "codex".into(), "copilot".into(), "cursor".into()],
         ignore: BTreeSet::new(),
         skill: &name,
+        strict,
     };
     let findings = lint_dir(dir, &lc);
     let errors = findings.iter().filter(|f| f.severity == "error").count();
@@ -449,6 +483,14 @@ pub fn lint_path(dir: &Path) -> LintReport {
 /// Mechanical, unambiguous fixes only: name casing, trailing whitespace, line endings.
 pub fn fix_dir(dir: &Path) -> Result<Vec<String>> {
     let mut fixed = Vec::new();
+    // NT110: skill.md → SKILL.md (two steps so case-insensitive filesystems rename too).
+    let lower = std::fs::read_dir(dir)?.flatten().any(|e| e.file_name() == "skill.md");
+    if lower {
+        let tmp = dir.join(".SKILL.md.tricks-rename");
+        std::fs::rename(dir.join("skill.md"), &tmp)?;
+        std::fs::rename(&tmp, dir.join("SKILL.md"))?;
+        fixed.push("skill.md → SKILL.md".into());
+    }
     let folder = dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
     for e in walkdir::WalkDir::new(dir).into_iter().filter_entry(|e| e.file_name() != ".git").flatten() {
         if !e.file_type().is_file() {
@@ -490,7 +532,7 @@ mod tests {
     use super::*;
 
     fn lc(name: &str) -> LintContext<'_> {
-        LintContext { agents: vec!["codex".into()], ignore: BTreeSet::new(), skill: name }
+        LintContext { agents: vec!["codex".into()], ignore: BTreeSet::new(), skill: name, strict: false }
     }
 
     #[test]
