@@ -250,8 +250,8 @@ pub fn add_exclude(dest: &Path) -> Result<Option<(String, String)>> {
     let parent = dest.parent().unwrap();
     let Some(root) = git::repo_root(parent) else { return Ok(None) };
     let Some(file) = git::exclude_file(parent) else { return Ok(None) };
-    let root = root.canonicalize().unwrap_or(root);
-    let parent_c = parent.canonicalize().unwrap_or(parent.to_path_buf());
+    let root = crate::paths::canon(&root).unwrap_or(root);
+    let parent_c = crate::paths::canon(parent).unwrap_or(parent.to_path_buf());
     let rel = parent_c.strip_prefix(&root).map(|r| r.join(dest.file_name().unwrap())).unwrap_or_else(|_| dest.to_path_buf());
     let entry = format!("/{}", rel.to_string_lossy().replace('\\', "/"));
     let mut text = std::fs::read_to_string(&file).unwrap_or_default();

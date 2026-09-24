@@ -109,7 +109,7 @@ pub fn normalize_input(ctx: &Ctx, input: &str, kind: Option<&str>) -> Result<(St
         input.ends_with("apm.yml") || input.ends_with("skills-lock.json") || input.ends_with(".json") || input.ends_with(".yml");
     if looks_file && (p.exists() || ctx.opts.cwd.join(p).exists()) {
         let abs = if p.is_absolute() { p.to_path_buf() } else { ctx.opts.cwd.join(p) };
-        let abs = abs.canonicalize().unwrap_or(abs);
+        let abs = crate::paths::canon(&abs).unwrap_or(abs);
         return Ok((ctx.paths.contract(&abs), Kind::Pointers));
     }
     if let Some(k) = kind {

@@ -95,7 +95,7 @@ fn target_repo(ctx: &Ctx, ws: &Workspace, t: &PublishTarget) -> Result<PathBuf> 
     if !p.exists() {
         bail!("publish target {} does not exist; clone the distribution repository there first", p.display());
     }
-    let p = p.canonicalize()?;
+    let p = crate::paths::canon(&p)?;
     if git::repo_root(&p).as_deref() != Some(p.as_path()) {
         bail!("publish target {} is not the root of a git repository", p.display());
     }

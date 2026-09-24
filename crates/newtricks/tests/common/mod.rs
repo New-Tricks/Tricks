@@ -35,7 +35,7 @@ pub fn skill_md(name: &str, description: &str, body: &str) -> String {
 impl Sandbox {
     pub fn new() -> Sandbox {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = newtricks::paths::canon(dir.path()).unwrap();
         let s = Sandbox {
             home: root.join("home"),
             config: root.join("config"),
@@ -52,7 +52,7 @@ impl Sandbox {
     }
 
     pub fn root(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap()
+        newtricks::paths::canon(self.dir.path()).unwrap()
     }
 
     pub fn cmd(&self, cwd: &Path, args: &[&str]) -> Output {

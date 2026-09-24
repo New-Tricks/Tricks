@@ -34,7 +34,7 @@ pub fn scope_from(ctx: &Ctx, to: Option<&str>, global: bool) -> Result<Scope> {
         (Some(p), false) => {
             let p = ctx.paths.expand(p);
             let p = if p.is_absolute() { p } else { ctx.opts.cwd.join(p) };
-            let p = p.canonicalize().with_context(|| format!("target {} does not exist", p.display()))?;
+            let p = crate::paths::canon(&p).with_context(|| format!("target {} does not exist", p.display()))?;
             if !p.is_dir() {
                 bail!("target {} is not a directory", p.display());
             }
@@ -53,7 +53,7 @@ pub fn link_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
     if local.join("SKILL.md").is_file()
         && (input.starts_with('.') || input.starts_with('/') || input.contains(std::path::MAIN_SEPARATOR) || !input.contains("//"))
     {
-        let dir = local.canonicalize()?;
+        let dir = crate::paths::canon(&local)?;
         let doc = SkillDoc::parse(&std::fs::read_to_string(dir.join("SKILL.md"))?);
         let folder = dir.file_name().unwrap().to_string_lossy().to_string();
         let name = doc.name.filter(|n| crate::id::valid_skill_name(n)).unwrap_or(folder);

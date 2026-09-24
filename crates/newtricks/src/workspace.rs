@@ -32,7 +32,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn open(root: &Path) -> Result<Workspace> {
-        let root = root.canonicalize().unwrap_or(root.to_path_buf());
+        let root = crate::paths::canon(root).unwrap_or(root.to_path_buf());
         let manifest = WorkspaceManifest::load(&root)?;
         let lock = WorkspaceLock::load(&root)?;
         let name = manifest
@@ -179,7 +179,7 @@ pub fn init(ctx: &Ctx, name: Option<&str>, agent_skill: bool) -> Result<InitRepo
             cwd.clone()
         }
     };
-    let root = root.canonicalize()?;
+    let root = crate::paths::canon(&root)?;
     let manifest = root.join(config::WORKSPACE_MANIFEST);
     let created = !manifest.exists();
     if created {
@@ -339,7 +339,7 @@ pub fn import(
         bail!("{} has no SKILL.md", src.display());
     }
     let doc = SkillDoc::parse(&std::fs::read_to_string(src.join("SKILL.md"))?);
-    let folder_name = src.canonicalize()?.file_name().unwrap().to_string_lossy().to_string();
+    let folder_name = crate::paths::canon(&src)?.file_name().unwrap().to_string_lossy().to_string();
     let name = name.map(String::from).or(doc.name.clone().filter(|n| valid_skill_name(n))).unwrap_or(folder_name);
     if !valid_skill_name(&name) {
         bail!("`{name}` is not a valid skill name; pass --name");

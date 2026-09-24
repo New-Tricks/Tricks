@@ -106,3 +106,22 @@ pub fn path_key(p: &Path) -> String {
     h.update(p.to_string_lossy().as_bytes());
     hex::encode(&h.finalize()[..6])
 }
+
+/// `canonicalize` without Windows verbatim prefixes (`\\?\C:\...`), which git and
+/// many tools cannot handle. UNC verbatim paths are left untouched.
+pub fn canon(p: &Path) -> std::io::Result<PathBuf> {
+    Ok(simplify(p.canonicalize()?))
+}
+
+pub fn simplify(p: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\")
+            && !rest.starts_with("UNC\\")
+        {
+            return PathBuf::from(rest.to_string());
+        }
+    }
+    p
+}
