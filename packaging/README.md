@@ -6,7 +6,7 @@
 |---|---|
 | GitHub Releases | Tag `vX.Y.Z` → `.github/workflows/release.yml` builds `tricks-<target>.tar.gz` + `.sha256` for macOS (arm64, x64), Linux (x64, arm64) and Windows (x64, arm64). `tricks self-update` consumes these. |
 | Homebrew | Tap [`new-tricks/homebrew-tap`](https://github.com/new-tricks/homebrew-tap), formula `Formula/newtricks.rb` (installs the `tricks` binary; source copy in `packaging/homebrew/`). `brew install new-tricks/tap/newtricks` — `--HEAD` until the first release adds a stable `url`/`sha256`. Move to homebrew-core later. `self-update` defers to `brew upgrade`. |
-| VS Code Marketplace | Platform-specific VSIX per target, each bundling its binary in `extension/bin/`. Needs the `VSCE_PAT` secret and a registered publisher (the placeholder `publisher` in `extension/package.json` is `newtricks`). |
+| VS Code Marketplace | Platform-specific VSIX per target, each bundling its binary in `extension/bin/`. Needs the `VSCE_PAT` secret and a registered publisher (the placeholder `publisher` in `extension/package.json` is `newtricks`). Without the secret the step is skipped; upload the VSIX files by hand at marketplace.visualstudio.com/manage. Temporary — see [Later](#later). |
 | Open VSX (Cursor, Windsurf, VSCodium) | Same VSIX files; needs the `OVSX_PAT` secret. |
 
 ## Before the first release
@@ -15,6 +15,10 @@
 2. Register a VS Code Marketplace publisher and an Open VSX namespace; set `publisher`.
 3. macOS signing and notarization: add an Apple Developer ID certificate (`APPLE_CERT_P12`, `APPLE_CERT_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_ID`, `APPLE_APP_PASSWORD`) and replace the placeholder step with `codesign --options runtime` + `xcrun notarytool submit --wait`. Unsigned CLI binaries work when installed via Homebrew or from a tarball after `xattr -d com.apple.quarantine`.
 4. Windows: optionally sign with Azure Trusted Signing.
+
+## Later
+
+- **Switch VS Code Marketplace publishing to a Microsoft Entra identity, with no secret stored.** Publish from GitHub Actions with `vsce publish --azure-credential`, authenticated by `azure/login` over OIDC (a federated credential on an Entra app registration or user-assigned managed identity, trusted for this repository's release workflow and added as a member of the `newtricks` publisher). Then delete the `VSCE_PAT` secret. Reasons: Azure DevOps is retiring PATs scoped to all accessible organizations, which Marketplace publishing requires; a stored PAT expires within a year and is a long-lived credential. Blocker: it needs an Entra directory (tenant) — a personal Microsoft account has none by default, and signing in to the Azure Portal with one fails with `AADSTS16000`.
 
 ## Local builds
 

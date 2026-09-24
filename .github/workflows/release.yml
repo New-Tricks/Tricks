@@ -85,6 +85,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # TODO: switch to a Microsoft Entra identity (no stored secret): azure/login over OIDC,
+      # then `vsce publish --azure-credential`, and delete VSCE_PAT. See packaging/README.md#later.
       - name: Publish to VS Code Marketplace
         if: env.VSCE_PAT != ''
         run: for f in artifacts/*.vsix; do npx @vscode/vsce publish --packagePath "$f" --pat "$VSCE_PAT"; done
