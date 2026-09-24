@@ -11,7 +11,8 @@ discover ─► preview ─► install / link to test ─► vendor & customize 
 ## Install
 
 ```bash
-cargo install --path crates/newtricks        # or: brew install newtricks (tap), or a release binary
+brew install --HEAD new-tricks/tap/newtricks   # stable once v0.1.0 is released
+cargo install --path crates/newtricks          # from a checkout
 ```
 
 Requires `git`. Uses your existing GitHub credentials (`GITHUB_TOKEN`, then `gh auth token`); nothing is stored.

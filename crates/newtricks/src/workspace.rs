@@ -143,7 +143,7 @@ pub fn skill_key_for_dir(dir: &Path) -> Option<String> {
 
 // ---------------------------------------------------------------- init
 
-const MANIFEST_TEMPLATE: &str = r#"# New Tricks workspace — https://github.com/New-Tricks/Tricks
+const MANIFEST_TEMPLATE: &str = r#"# New Tricks workspace — https://github.com/new-tricks/tricks
 # Skills authored or customized here. Vendored skills record their upstream; the base
 # commit lives in tricks.lock.
 

@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 /// Release repository; override with TRICKS_RELEASE_REPO.
-pub const RELEASE_REPO: &str = "New-Tricks/Tricks";
+pub const RELEASE_REPO: &str = "new-tricks/tricks";
 
 #[derive(Debug, Serialize)]
 pub struct SelfUpdateReport {
