@@ -11,7 +11,7 @@ discover ─► preview ─► install / link to test ─► vendor & customize 
 ## Install
 
 ```bash
-brew install --HEAD new-tricks/tap/newtricks   # stable once v0.1.0 is released
+brew install new-tricks/tap/newtricks
 cargo install --path crates/newtricks          # from a checkout
 ```
 

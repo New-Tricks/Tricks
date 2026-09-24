@@ -1,7 +1,8 @@
 name: Release
 
-# Tag vX.Y.Z to build signed-off binaries, checksums, platform VSIX packages, and
-# (when secrets are configured) publish to the VS Code Marketplace and Open VSX.
+# Tag vX.Y.Z to build binaries, checksums and platform VSIX packages, then (when
+# secrets are configured) publish to the VS Code Marketplace and Open VSX and update
+# the Homebrew tap.
 on:
   push:
     tags: ["v*"]
@@ -111,3 +112,35 @@ jobs:
       - name: Publish to Open VSX
         if: ${{ !cancelled() && env.OVSX_PAT != '' }}
         run: for f in artifacts/*.vsix; do npx ovsx publish --skip-duplicate "$f" --pat "$OVSX_PAT"; done
+
+  homebrew:
+    needs: release
+    if: always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
+    # macOS runners have Homebrew preinstalled (for `brew style`).
+    runs-on: macos-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+    steps:
+      # The workflow's own commit: the tag on release, the dispatching branch on re-runs.
+      - uses: actions/checkout@v4
+        with:
+          path: tricks
+      - uses: actions/checkout@v4
+        if: env.TAP_KEY != ''
+        with:
+          repository: new-tricks/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+      - name: Render and push the formula
+        if: env.TAP_KEY != ''
+        run: |
+          set -euo pipefail
+          tricks/packaging/homebrew/render.sh "$TAG" > tap/Formula/newtricks.rb
+          brew style tap/Formula/newtricks.rb
+          cd tap
+          if git diff --quiet; then echo "Formula already up to date"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "newtricks ${TAG#v}"
+          git push
