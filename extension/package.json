@@ -370,14 +370,16 @@
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "package": "vsce package",
-    "test": "node ./out/test/protocol.test.js",
+    "test": "node ./out/test/protocol.test.js && node ./out/test/webview.test.js",
     "test:integration": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^20.11.0",
     "@types/vscode": "~1.90.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.0.0",
+    "jsdom": "^30.1.1",
     "typescript": "~5.9.0"
   }
 }
