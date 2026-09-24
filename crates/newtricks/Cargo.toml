@@ -21,6 +21,7 @@ path = "src/main.rs"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 dirs = "7.0.0"
+flate2 = "1.1.10"
 globset = "0.4.20"
 hex = "0.4.3"
 is-terminal = "0.4.17"
@@ -40,5 +41,7 @@ thiserror = "2.0.21"
 time = { version = "0.3.55", features = ["formatting", "parsing", "macros"] }
 toml = "1.1.6"
 toml_edit = "0.25.15"
+unicode-normalization = "0.1.25"
 ureq = { version = "3.4.2", features = ["json"] }
 walkdir = "2.5.0"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

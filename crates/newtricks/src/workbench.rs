@@ -90,7 +90,59 @@ fn locked_from(r: &ResolvedSkill) -> LockedSkill {
         ref_name: r.reference.name.clone(),
         commit: r.reference.commit.clone(),
         tree: r.tree.clone(),
+        path: None,
     }
+}
+
+/// Resolve the newest revision of an installed skill, following an upstream move of
+/// its directory (detected with git rename tracking from the locked commit).
+fn resolve_following(ctx: &Ctx, id: &SkillId, requested: &str, fetch: Fetch, base: &str) -> Result<(ResolvedSkill, Option<SkillId>)> {
+    match resolve_id(ctx, id, requested, fetch) {
+        Ok(r) if r.id != *id => {
+            let moved = r.id.clone();
+            Ok((r, Some(moved)))
+        }
+        Ok(r) => Ok((r, None)),
+        Err(e) => {
+            let m = crate::resolve::open_mirror(ctx, &id.source, Fetch::Never)?;
+            let refs = crate::resolve::mirror_refs(&m)?;
+            let Ok(target) = crate::resolve::resolve_ref(&m, &refs, Some(requested), &mut Vec::new()) else { return Err(e) };
+            if m.tree_at(&target.commit, &id.path).is_some() {
+                return Err(e);
+            }
+            let _ = m.ensure_commit(base);
+            let Some(newp) = m.renamed_path(base, &target.commit, &id.path) else { return Err(e) };
+            let new_id = SkillId::new(id.source.clone(), &newp);
+            let r = resolve_id(ctx, &new_id, requested, Fetch::Never)?;
+            Ok((r, Some(new_id)))
+        }
+    }
+}
+
+/// Move an installed skill to its new canonical id after an upstream rename.
+fn migrate_id(ctx: &Ctx, lock: &mut WorkbenchLock, old_s: &str, old: &SkillId, new: &SkillId) -> Result<String> {
+    let new_s = new.to_string();
+    let path = ctx.paths.workbench_manifest();
+    let mut doc = config::load_doc(&path)?;
+    let t = config::table_mut(&mut doc, &["skills"]);
+    if let Some(item) = t.remove(old_s) {
+        t.insert(&new_s, item);
+    }
+    config::save_doc(&path, &doc)?;
+    if let Some(mut l) = lock.get(old_s).cloned() {
+        lock.remove(old_s);
+        if l.path.is_none() {
+            l.path = Some(old.path.clone());
+        }
+        l.id = new_s.clone();
+        lock.upsert(l);
+    }
+    lock.save(&ctx.paths.workbench_lock())?;
+    for table in ["placements", "pending_updates", "auto_deployed", "deployments"] {
+        ctx.state.conn.execute(&format!("UPDATE {table} SET skill=?1 WHERE skill=?2"), params![new_s, old_s])?;
+    }
+    ctx.ui.info(&format!("upstream moved {old} → {new}; following the rename"));
+    Ok(new_s)
 }
 
 pub fn add(ctx: &Ctx, input: &str, agent_names: &[String], policy: Option<Policy>, copy: bool, shadow: bool) -> Result<AddReport> {
@@ -163,20 +215,13 @@ pub fn add(ctx: &Ctx, input: &str, agent_names: &[String], policy: Option<Policy
 
 fn add_wellknown(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], copy: bool, shadow: bool) -> Result<AddReport> {
     let id = SkillId::new(spec.source.clone(), &spec.selector);
-    let url: Option<String> =
-        ctx.state.conn.query_row("SELECT url FROM skills WHERE id=?1", [id.to_string()], |r| r.get(0)).optional()?.flatten();
-    let url = url.with_context(|| {
-        format!("{id} is not in the index; add its site with `tricks source add https://{} --kind wellknown`", id.source.host)
-    })?;
-    let resp = ctx.gh.get_public(&url)?;
-    if resp.status != 200 {
-        bail!("{url} returned {}", resp.status);
-    }
-    let (dir, tree) = store::from_skill_md(ctx, &resp.body)?;
+    let (origin, entry) = crate::wellknown::lookup(ctx, &id.to_string())?;
+    let (tmp, _url, digest) = crate::wellknown::materialize(ctx, &origin, &entry)?;
+    let (dir, tree) = store::from_dir(ctx, tmp.path())?;
     let m = load_manifest(ctx)?;
     let agents_sel = if agent_names.is_empty() { default_agents(&m)? } else { agents::parse_list(agent_names)? };
-    let name = placement_name(&crate::skill::SkillDoc::parse(&String::from_utf8_lossy(&resp.body)).name.unwrap_or_default(), &id);
-    let digest = crate::treehash::blob_hash_hex(&resp.body);
+    let text = std::fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
+    let name = placement_name(&crate::skill::SkillDoc::parse(&text).name.unwrap_or_default(), &id);
     let mut placements = Vec::new();
     for a in &agents_sel {
         let p = deploy::place(
@@ -198,18 +243,14 @@ fn add_wellknown(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], copy: bool
     }
     let path = ctx.paths.workbench_manifest();
     let mut doc = config::load_doc(&path)?;
-    let entry = WbSkill { version: Some("latest".into()), ..Default::default() };
-    config::table_mut(&mut doc, &["skills"]).insert(&id.to_string(), config::to_inline(&entry)?);
+    let mut wb = WbSkill { version: Some("latest".into()), ..Default::default() };
+    if !agent_names.is_empty() {
+        wb.agents = Some(agents_sel.iter().map(|a| a.id.to_string()).collect());
+    }
+    config::table_mut(&mut doc, &["skills"]).insert(&id.to_string(), config::to_inline(&wb)?);
     config::save_doc(&path, &doc)?;
     let mut lock = load_lock(ctx)?;
-    lock.upsert(LockedSkill {
-        id: id.to_string(),
-        name: name.clone(),
-        ref_kind: "digest".into(),
-        ref_name: digest[..12].to_string(),
-        commit: digest.clone(),
-        tree: tree.clone(),
-    });
+    lock.upsert(wellknown_locked(&id, &name, &digest, &tree));
     lock.save(&ctx.paths.workbench_lock())?;
     Ok(AddReport {
         id: id.to_string(),
@@ -219,9 +260,32 @@ fn add_wellknown(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], copy: bool
         tree,
         agents: agents_sel.iter().map(|a| a.id.to_string()).collect(),
         placements,
-        license_class: None,
+        license_class: Some(crate::license::detect(&crate::inspect::gather_dir(&dir)).class),
         risk: RiskReport::scan_dir(&dir).summary(),
     })
+}
+
+fn wellknown_locked(id: &SkillId, name: &str, digest: &str, tree: &str) -> LockedSkill {
+    let short = digest.trim_start_matches("sha256:");
+    LockedSkill {
+        id: id.to_string(),
+        name: name.to_string(),
+        ref_kind: "digest".into(),
+        ref_name: short[..12.min(short.len())].to_string(),
+        commit: digest.to_string(),
+        tree: tree.to_string(),
+        path: None,
+    }
+}
+
+/// A newer published version of a well-known skill (by digest), after refreshing its site's index.
+fn wellknown_newer(ctx: &Ctx, locked: &LockedSkill, fetch: bool) -> Result<Option<(String, crate::wellknown::Entry)>> {
+    let (origin, _) = crate::wellknown::lookup(ctx, &locked.id)?;
+    if fetch {
+        let _ = crate::sources::refresh(ctx, false, Some(&origin));
+    }
+    let (origin, entry) = crate::wellknown::lookup(ctx, &locked.id)?;
+    Ok(entry.digest.clone().filter(|d| d != &locked.commit).map(|_| (origin, entry)))
 }
 
 /// Find an installed skill by canonical id, short id or name.
@@ -367,6 +431,11 @@ pub fn install(ctx: &Ctx, frozen: bool) -> Result<InstallReport> {
         }
     }
     lock.save(&ctx.paths.workbench_lock())?;
+    if let Ok(n) = crate::agentskill::refresh_if_outdated(ctx)
+        && n > 0
+    {
+        ctx.ui.info("refreshed the bundled agent skill");
+    }
     ctx.state.journal_finish(journal, "done")?;
     Ok(rep)
 }
@@ -397,6 +466,23 @@ fn install_one(
             &l.commit,
             entry.mode.as_deref() == Some("copy"),
         )?;
+        if !frozen
+            && !matches!(entry.policy(), Policy::Paused | Policy::Pinned)
+            && let Ok(Some((_, e))) = wellknown_newer(ctx, &l, true)
+        {
+            let d = e.digest.unwrap_or_default();
+            ctx.state.conn.execute(
+                "INSERT OR REPLACE INTO pending_updates(skill, from_commit, to_commit, to_tree, ref_kind, ref_name, risk, at) VALUES(?1,?2,?3,NULL,'digest',?4,'',?5)",
+                params![id_s, l.commit, d, d.trim_start_matches("sha256:").chars().take(12).collect::<String>(), now()],
+            )?;
+            return Ok(InstallItem {
+                id: id_s.into(),
+                name: l.name,
+                action: "update-ready".into(),
+                commit: Some(l.commit),
+                detail: Some("new digest published".into()),
+            });
+        }
         return Ok(InstallItem {
             id: id_s.into(),
             name: l.name,
@@ -427,7 +513,13 @@ fn install_one(
     let mut detail = None;
 
     if !frozen && policy != Policy::Paused && policy != Policy::Pinned {
-        let newest = resolve_id(ctx, &id, &entry.requested_ref(), Fetch::Never)?;
+        let (newest, moved) = resolve_following(ctx, &id, &entry.requested_ref(), Fetch::Never, &locked.commit)?;
+        if let Some(new_id) = moved {
+            let new_s = migrate_id(ctx, lock, id_s, &id, &new_id)?;
+            let m2 = load_manifest(ctx)?;
+            let entry2 = m2.skills.get(&new_s).cloned().unwrap_or_default();
+            return install_one(ctx, &m2, lock, &new_s, &entry2, frozen);
+        }
         if newest.reference.commit != locked.commit && newest.tree != locked.tree {
             if policy.is_auto() {
                 if policy == Policy::Auto {
@@ -457,7 +549,8 @@ fn install_one(
             deploy_tree = auto.1;
         }
     }
-    let dir = store::from_mirror(ctx, &mirror, &deploy_commit, &id.path, &deploy_tree)?;
+    let export_path = if deploy_commit == locked.commit { locked.path.clone().unwrap_or(id.path.clone()) } else { id.path.clone() };
+    let dir = store::from_mirror(ctx, &mirror, &deploy_commit, &export_path, &deploy_tree)?;
     let agents_sel = skill_agents(m, entry)?;
     let n = sync_placements(
         ctx,
@@ -490,7 +583,8 @@ fn short(c: &str) -> &str {
 /// Risk and file changes between the locked revision and a candidate.
 fn update_risk(ctx: &Ctx, newest: &ResolvedSkill, locked: &LockedSkill) -> Result<Vec<String>> {
     let new_dir = store::from_mirror(ctx, &newest.mirror, &newest.reference.commit, &newest.id.path, &newest.tree)?;
-    let old_dir = store::from_mirror(ctx, &newest.mirror, &locked.commit, &newest.id.path, &locked.tree)?;
+    let old_path = locked.path.clone().unwrap_or(newest.id.path.clone());
+    let old_dir = store::from_mirror(ctx, &newest.mirror, &locked.commit, &old_path, &locked.tree)?;
     let mut lines = file_changes(&newest.mirror.dir, &locked.commit, &newest.reference.commit, &newest.id.path);
     lines.extend(RiskReport::scan_dir(&new_dir).diff_from(&RiskReport::scan_dir(&old_dir)).into_iter().map(|l| format!("risk: {l}")));
     Ok(lines)
@@ -533,15 +627,57 @@ pub fn update(ctx: &Ctx, only: Option<&str>) -> Result<Vec<UpdateItem>> {
     let mut out = Vec::new();
     for id_s in targets {
         let entry = m.skills.get(&id_s).cloned().unwrap_or_default();
-        let id = SkillId::parse_canonical(&id_s)?;
-        if id.source.repo_path == ".well-known/agent-skills" {
-            continue;
-        }
+        let mut id_s = id_s;
+        let mut id = SkillId::parse_canonical(&id_s)?;
         if only.is_none() && matches!(entry.policy(), Policy::Pinned | Policy::Paused) {
             continue;
         }
+        if id.source.repo_path == ".well-known/agent-skills" {
+            let Some(locked) = lock.get(&id_s).cloned() else { continue };
+            let Some((origin, e)) = wellknown_newer(ctx, &locked, true)? else { continue };
+            let (tmp, _url, digest) = crate::wellknown::materialize(ctx, &origin, &e)?;
+            let (dir, tree) = store::from_dir(ctx, tmp.path())?;
+            let old_dir = store::entry_path(ctx, &locked.tree);
+            let changes: Vec<String> =
+                RiskReport::scan_dir(&dir).diff_from(&RiskReport::scan_dir(&old_dir)).into_iter().map(|l| format!("risk: {l}")).collect();
+            let to_ref = digest.trim_start_matches("sha256:").chars().take(12).collect::<String>();
+            let mut details = vec![format!("{}: digest {} → {to_ref}", locked.name, locked.ref_name)];
+            details.extend(changes.iter().map(|c| format!("  {c}")));
+            let applied = ctx.confirm(&format!("Apply update to {}?", locked.name), &details)?;
+            if applied {
+                let agents_sel = skill_agents(&m, &entry)?;
+                sync_placements(
+                    ctx,
+                    &id_s,
+                    &placement_name(&locked.name, &id),
+                    &agents_sel,
+                    &dir,
+                    &tree,
+                    &digest,
+                    entry.mode.as_deref() == Some("copy"),
+                )?;
+                lock.upsert(wellknown_locked(&id, &locked.name, &digest, &tree));
+                clear_pending(ctx, &id_s)?;
+            }
+            out.push(UpdateItem {
+                id: id_s.clone(),
+                name: locked.name.clone(),
+                from: locked.commit.clone(),
+                to: digest.clone(),
+                from_ref: locked.ref_name.clone(),
+                to_ref,
+                changes,
+                applied,
+            });
+            continue;
+        }
         let Some(locked) = lock.get(&id_s).cloned() else { continue };
-        let newest = resolve_id(ctx, &id, &entry.requested_ref(), Fetch::IfStale)?;
+        let (newest, moved) = resolve_following(ctx, &id, &entry.requested_ref(), Fetch::IfStale, &locked.commit)?;
+        if let Some(new_id) = moved {
+            id_s = migrate_id(ctx, &mut lock, &id_s, &id, &new_id)?;
+            id = new_id;
+        }
+        let Some(locked) = lock.get(&id_s).cloned() else { continue };
         if newest.reference.commit == locked.commit || newest.tree == locked.tree {
             if newest.reference.commit != locked.commit {
                 lock.upsert(locked_from(&newest)); // same content, newer commit
@@ -606,19 +742,34 @@ pub fn outdated(ctx: &Ctx) -> Result<Vec<Pending>> {
             continue;
         }
         let Ok(id) = SkillId::parse_canonical(id_s) else { continue };
+        let Some(locked) = lock.get(id_s) else { continue };
         if id.source.repo_path == ".well-known/agent-skills" {
+            if let Ok(Some((_, e))) = wellknown_newer(ctx, locked, true) {
+                let d = e.digest.unwrap_or_default();
+                out.push(Pending {
+                    id: id_s.clone(),
+                    name: locked.name.clone(),
+                    from_ref: locked.ref_name.clone(),
+                    to_ref: d.trim_start_matches("sha256:").chars().take(12).collect(),
+                    to_commit: d,
+                    policy: policy.as_str().into(),
+                    details: vec!["new digest published in the site's index".into()],
+                });
+            }
             continue;
         }
-        let Some(locked) = lock.get(id_s) else { continue };
-        let newest = match resolve_id(ctx, &id, &entry.requested_ref(), Fetch::IfStale) {
+        let (newest, moved) = match resolve_following(ctx, &id, &entry.requested_ref(), Fetch::IfStale, &locked.commit) {
             Ok(n) => n,
             Err(e) => {
                 ctx.ui.warn(&format!("{id_s}: {e:#}"));
                 continue;
             }
         };
-        if newest.reference.commit != locked.commit && newest.tree != locked.tree {
-            let details = update_risk(ctx, &newest, locked).unwrap_or_default();
+        if moved.is_some() || (newest.reference.commit != locked.commit && newest.tree != locked.tree) {
+            let mut details = update_risk(ctx, &newest, locked).unwrap_or_default();
+            if let Some(n) = &moved {
+                details.insert(0, format!("moved upstream: {} → {} (followed on update)", id.path, n.path));
+            }
             if !policy.is_auto() {
                 ctx.state.conn.execute(
                     "INSERT OR REPLACE INTO pending_updates(skill, from_commit, to_commit, to_tree, ref_kind, ref_name, risk, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",

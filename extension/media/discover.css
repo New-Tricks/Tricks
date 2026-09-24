@@ -13,7 +13,7 @@ label { font-size: 0.9em; display: inline-flex; align-items: center; gap: 3px; }
 .desc { margin: 4px 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
 .tag { font-size: 0.8em; padding: 0 5px; border-radius: 3px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
-.tag.trust-official, .tag.trust-yours, .tag.trust-org { background: var(--vscode-testing-iconPassed, #388a34); color: #fff; }
+.tag.trust-official, .tag.trust-yours, .tag.trust-org, .tag.trust-starred { background: var(--vscode-testing-iconPassed, #388a34); color: #fff; }
 .tag.lic-block, .tag.lic-non-commercial { background: var(--vscode-inputValidation-errorBackground, #5a1d1d); color: var(--vscode-foreground); }
 .tag.risk { background: transparent; border: 1px solid var(--vscode-editorWarning-foreground, #cca700); color: var(--vscode-editorWarning-foreground, #cca700); }
 .tag.state { background: transparent; border: 1px solid var(--vscode-focusBorder); }

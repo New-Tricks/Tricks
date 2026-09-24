@@ -57,3 +57,22 @@ jobs:
           npm ci --no-audit --no-fund
           npx tsc -p .
           xvfb-run -a node out/test/runTest.js
+
+  ecosystem:
+    # Acceptance scenario 8: a published repo installs via npx skills, APM and Claude Code.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: astral-sh/setup-uv@v6
+      - run: npm install -g @anthropic-ai/claude-code
+      - name: Install a published repository through every ecosystem
+        run: |
+          git config --global user.name CI
+          git config --global user.email ci@example.com
+          scripts/ecosystem-test.sh target/release/tricks

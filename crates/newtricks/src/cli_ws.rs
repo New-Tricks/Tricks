@@ -47,6 +47,9 @@ pub enum WsCmd {
         skills: Vec<String>,
         #[arg(long)]
         fix: bool,
+        /// Frontmatter keys outside the Agent Skills spec are errors (like `skills-ref`)
+        #[arg(long)]
+        strict: bool,
     },
     /// Edit a skill (optionally on a branch); flips its deployment to dev mode
     Edit {
@@ -140,7 +143,7 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
             let r = workspace::new_skill(&ws, &name, description.as_deref())?;
             emit(json, &r, |r| println!("created {} — edit {}/SKILL.md", r.name, r.path));
         }
-        WsCmd::Lint { skills, fix } => {
+        WsCmd::Lint { skills, fix, strict } => {
             let one_path = skills.len() == 1 && std::path::Path::new(&skills[0]).join("SKILL.md").is_file();
             let ws = workspace::current(ctx)?;
             let mut rep = match (&ws, one_path) {
@@ -152,18 +155,18 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                                 fixed.extend(crate::lint::fix_dir(&ws.root.join(&s.path))?.into_iter().map(|f| format!("{n}/{f}")));
                             }
                         }
-                        let mut r = crate::lint::lint_workspace(ctx, ws, &skills)?;
+                        let mut r = crate::lint::lint_workspace_opts(ctx, ws, &skills, strict)?;
                         r.fixed = fixed;
                         r
                     } else {
-                        crate::lint::lint_workspace(ctx, ws, &skills)?
+                        crate::lint::lint_workspace_opts(ctx, ws, &skills, strict)?
                     }
                 }
                 _ => {
                     let Some(p) = skills.first() else { bail!("not in a workspace: pass a skill directory") };
                     let dir = ctx.opts.cwd.join(p);
                     let fixed = if fix { crate::lint::fix_dir(&dir)? } else { vec![] };
-                    let mut r = crate::lint::lint_path(&dir);
+                    let mut r = crate::lint::lint_path(&dir, strict);
                     r.fixed = fixed;
                     r
                 }

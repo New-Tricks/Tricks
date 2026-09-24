@@ -633,65 +633,12 @@ pub fn index_marketplace(ctx: &Ctx, key: &str) -> Result<usize> {
 
 // ---------------------------------------------------------------- well-known adapter
 
-#[derive(Debug, Deserialize)]
-struct WellKnownIndex {
-    #[serde(default)]
-    skills: Vec<WellKnownSkill>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WellKnownSkill {
-    name: String,
-    #[serde(rename = "type", default)]
-    kind: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    url: String,
-    #[serde(default)]
-    digest: Option<String>,
-}
-
 pub fn wellknown_source(base: &str) -> SourceId {
-    let host = base.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or(base);
-    SourceId::new(host, ".well-known/agent-skills")
+    crate::wellknown::source_id(base)
 }
 
 pub fn index_wellknown(ctx: &Ctx, base: &str) -> Result<usize> {
-    let base = base.trim_end_matches('/');
-    let url = format!("{base}/.well-known/agent-skills/index.json");
-    let r = ctx.gh.get_public(&url)?;
-    if r.status != 200 {
-        bail!("{url} returned {}", r.status);
-    }
-    let idx: WellKnownIndex = serde_json::from_slice(&r.body).with_context(|| format!("parsing {url}"))?;
-    let src = wellknown_source(base);
-    let mut keep = BTreeSet::new();
-    let mut n = 0;
-    for s in idx.skills {
-        if s.kind.as_deref().unwrap_or("skill-md") != "skill-md" {
-            continue;
-        }
-        let abs = if s.url.starts_with("http") { s.url.clone() } else { format!("{base}{}", s.url) };
-        let resp = ctx.gh.get_public(&abs)?;
-        if resp.status != 200 {
-            ctx.ui.warn(&format!("{abs} returned {}", resp.status));
-            continue;
-        }
-        let text = String::from_utf8_lossy(&resp.body).to_string();
-        let mut rec =
-            IndexedSkill::from_content(&src, &s.name, &text, &[("SKILL.md".into(), false)], s.digest.clone(), None, None, None, None, base);
-        if rec.description.is_empty() {
-            rec.description = s.description.unwrap_or_default();
-        }
-        rec.kind = "wellknown".into();
-        rec.url = Some(abs);
-        rec.tree = Some(crate::treehash::blob_hash_hex(text.as_bytes()));
-        keep.insert(rec.id.clone());
-        index::upsert(ctx, &rec)?;
-        n += 1;
-    }
-    index::prune_source(ctx, &src.to_string(), &keep)?;
-    Ok(n)
+    crate::wellknown::index(ctx, base)
 }
 
 // ---------------------------------------------------------------- pointer lists
@@ -949,6 +896,53 @@ pub fn cached_identity(ctx: &Ctx, host: &str) -> Option<(String, Vec<String>)> {
         }
         Err(_) => None,
     }
+}
+
+/// Repositories the signed-in user has starred (`owner/repo`, lowercase), for the
+/// "starred by you" trust facet. Refreshed daily; `TRICKS_STARRED` overrides (tests).
+pub fn cached_starred(ctx: &Ctx, host: &str) -> std::collections::HashSet<String> {
+    if let Ok(v) = std::env::var("TRICKS_STARRED") {
+        return v.split(',').map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty()).collect();
+    }
+    let key = format!("starred_at:{host}");
+    let fresh = ctx.state.meta_get(&key).ok().flatten().and_then(|t| t.parse::<i64>().ok()).map(|t| now() - t < 86_400).unwrap_or(false);
+    if !fresh && !ctx.opts.offline && ctx.gh.token(host).is_some() {
+        #[derive(Deserialize)]
+        struct Star {
+            full_name: String,
+        }
+        let mut all: Vec<String> = Vec::new();
+        let mut ok = true;
+        for page in 1..=10 {
+            match ctx.gh.api_json::<Vec<Star>>(host, &format!("/user/starred?per_page=100&page={page}")) {
+                Ok(v) => {
+                    let n = v.len();
+                    all.extend(v.into_iter().map(|s| s.full_name.to_ascii_lowercase()));
+                    if n < 100 {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            let _ = ctx.state.conn.execute("DELETE FROM starred WHERE host=?1", [host]);
+            for r in &all {
+                let _ = ctx.state.conn.execute("INSERT OR IGNORE INTO starred(host, repo) VALUES(?1, ?2)", params![host, r]);
+            }
+            let _ = ctx.state.meta_set(&key, &now().to_string());
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    if let Ok(mut st) = ctx.state.conn.prepare("SELECT repo FROM starred WHERE host=?1")
+        && let Ok(rows) = st.query_map([host], |r| r.get::<_, String>(0))
+    {
+        out.extend(rows.flatten());
+    }
+    out
 }
 
 pub fn api_base_for(host: &str) -> String {

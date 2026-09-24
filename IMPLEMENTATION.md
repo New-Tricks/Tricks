@@ -30,14 +30,17 @@ Core modules: `id` (grammar, URL normalization), `resolve` (refs, `@latest`, nam
 
 | What | How | Result |
 |---|---|---|
-| Unit tests | `cargo test` (ids, URL normalization, tree hash vs git, licence detection, risk, lint rules, merge, config, framing) | 33 pass |
-| M2 acceptance | `tests/workbench.rs` (scenarios 1, 4, 5 + rollback, frozen, auto ownership) | 6 pass |
+| Unit tests | `cargo test` (ids, URL normalization, tree hash vs git, licence detection, risk, lint rules, merge, config, framing, discovery URLs/digests/archive safety, trust levels) | 37 pass |
+| M2 acceptance | `tests/workbench.rs` (scenarios 1, 4, 5 + rollback, frozen, auto ownership, upstream renames, agent skill, starred trust) | 9 pass |
+| NT1xx conformance | `tests/skills_ref_conformance.rs`: all validator and parser cases ported from the official `skills-ref` (agentskills/agentskills @ 69ef37e) | 26 pass |
+| `.well-known` discovery | `tests/wellknown.rs` against a local HTTP server: `skill-md`, `.tar.gz` and `.zip` entries, digest mismatch and traversal rejected, digest-based updates, unknown `$schema` refused | 2 pass |
 | M3/M4 acceptance | `tests/workspace.rs` (scenarios 3, 6-trailer, 7 + variants, lint gate, licence override, pr dry-run) | 7 pass |
 | RPC protocol | `tests/rpc.rs` (framing, dispatch, confirmation errors) | pass |
 | Extension | `extension/out/test/runTest.js` in VS Code 1.128.1 (throwaway profile): activation, commands, status via real binary, lint diagnostics, virtual documents, Markdown preview | pass |
 | Live search | Real GitHub + skills.sh: default sources (≈530 skills) + live adapters; cold index ≈30 s, warm online ≈6 s, offline ≈20 ms | works |
 | Scenario 2 (dedup) | Live results group identical copies across catalogs | works |
-| Scenario 8 (installers) | Published a real workspace (vendored `anthropics/skills//skill-creator` + a new skill), then: `claude plugin validate` ✔, `claude plugin marketplace add` + `install` ✔ (2 skills, v0.1.0), `npx skills add <target> --list` ✔ (both skills), `apm install` (0.31.0) ✔ into `.claude/skills/` | pass |
+| Scenario 8 (installers) | `scripts/ecosystem-test.sh`, run in CI (`ecosystem` job) and locally: publish a workspace, then `npx skills add --list`, `apm install` (into `.claude/skills/`), `claude plugin validate` + `marketplace add` + `install` (both skills loaded) | pass |
+| Platforms | CI on Ubuntu, macOS and Windows (Windows runs unit, conformance and protocol tests; link-asserting integration tests are Unix-only by design) | pass |
 | Quality | `cargo clippy --all-targets` and `cargo fmt --check` | clean |
 
 ## Decisions made during implementation — please review
@@ -70,12 +73,8 @@ Core modules: `id` (grammar, URL normalization), `resolve` (refs, `@latest`, nam
 ## Known gaps
 
 - **Not exercised against live GitHub writes:** `tricks pr` (non-dry-run: creates a public fork and PR), `publish --push/--pr`, `self-update` (no release exists yet). Dry-run and local paths are tested.
-- **Windows**: compiled logic is cfg-gated and CI runs the suite on Windows, but nothing has been run on a Windows machine yet. Link-asserting integration tests are Unix-only by design.
+- **Windows with real agents installed**: CI passes on Windows runners, but copy-mode placement hasn't been checked against installed Claude Code/Codex/Copilot/Cursor on Windows.
 - **Cursor hidden-directory check (§17)** not run: needs an authenticated Cursor agent. The Linux rule is coded conservatively (copy when the target path is hidden).
-- **Trust facet** lacks "starred by you".
-- **NT1xx** not yet cross-checked against the official `skills-ref` fixtures.
-- **Bundled agent skill** is installed with `init --agent-skill`; the "offer on first run" prompt is not implemented.
-- **Rename following** is implemented for workspace upstream merges; a workbench install whose upstream path moves reports an error instead.
-- **`.well-known`** installs support `skill-md` entries only (not archives).
 - **Extension UI** (Discover webview, publish panel, merge editor wiring) is covered by activation/RPC tests but not by UI automation.
 - **macOS signing/notarization** step is a placeholder in `release.yml`.
+- **Deliberate differences from `skills-ref`**: unknown frontmatter keys are info (NT402) unless `strict-spec` is set, and `skill.md` is accepted with a warning (NT110) because Claude Code only loads `SKILL.md`.

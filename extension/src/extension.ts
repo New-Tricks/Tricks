@@ -457,8 +457,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     }),
   );
 
+  reg("tricks.agentSkill", async () => {
+    const agents = await pickAgents();
+    if (!agents?.length) return;
+    const r = await withProgress("New Tricks: installing the agent skill", () => client.request("agentSkill/install", { agents }));
+    if (r) vscode.window.showInformationMessage(`Installed the New Tricks agent skill for ${agents.join(", ")}.`);
+  });
+
+  // Offer the bundled agent skill once (shared with the CLI's first-run offer).
+  const offerAgentSkill = async () => {
+    try {
+      const st = await client.request("agentSkill/status", {}, { confirm: false });
+      if (!st.offer) return;
+      const choice = await vscode.window.showInformationMessage(
+        "Install the New Tricks agent skill? It lets Claude Code, Codex, Copilot and Cursor search, preview, lint and draft skill changes on branches. Installs and publishes still ask you.",
+        "Install…",
+        "Not now",
+      );
+      if (choice === "Install…") await vscode.commands.executeCommand("tricks.agentSkill");
+      else await client.request("agentSkill/dismiss", {}, { confirm: false });
+    } catch {
+      /* non-fatal */
+    }
+  };
+
   renderStatus();
-  refreshAll();
+  refreshAll().then(() => {
+    if (!context.extensionMode || context.extensionMode !== vscode.ExtensionMode.Test) offerAgentSkill();
+  });
   // Exposed for integration tests.
   return { client, model, lint, refreshAll, status };
 }

@@ -186,3 +186,69 @@ fn link_untracked_project_placement_is_invisible_to_git() {
     assert!(git(&proj, &["status", "--porcelain"]).is_empty());
     s.ok(&["unlink", "--all"]);
 }
+
+#[test]
+fn follows_upstream_renames() {
+    let s = Sandbox::new();
+    let r = hello_repo(&s);
+    s.ok(&["add", "acme/skills//hello@main"]);
+    std::fs::write(
+        s.config.join("tricks.toml"),
+        std::fs::read_to_string(s.config.join("tricks.toml")).unwrap().replace("[settings]", "[settings]\nfetch_interval = \"0s\""),
+    )
+    .unwrap();
+    // Upstream reorganizes: skills/hello → skills/greetings/hello, and edits it.
+    std::fs::create_dir_all(r.join("skills/greetings")).unwrap();
+    git(&r, &["mv", "skills/hello", "skills/greetings/hello"]);
+    write(&r.join("skills/greetings/hello/SKILL.md"), &skill_md("hello", "Say hello. Use when greeting.", "# Hello\n\nv1\nmoved\n"));
+    commit_all(&r, "reorganize");
+    let out = s.json(&["outdated"]);
+    let details = out[0]["details"].to_string();
+    assert!(details.contains("moved upstream: skills/hello → skills/greetings/hello"), "{out}");
+    // Update follows the rename: manifest, lock and placements move to the new id.
+    s.ok(&["update", "--yes"]);
+    let manifest = std::fs::read_to_string(s.config.join("tricks.toml")).unwrap();
+    assert!(manifest.contains("github.com/acme/skills//skills/greetings/hello") && !manifest.contains("//skills/hello\""), "{manifest}");
+    let lock = std::fs::read_to_string(s.config.join("tricks.lock")).unwrap();
+    assert!(lock.contains("//skills/greetings/hello") && !lock.contains("path = "), "{lock}");
+    assert!(std::fs::read_to_string(s.home.join(".claude/skills/hello/SKILL.md")).unwrap().contains("moved"));
+    let st = s.json(&["status"]);
+    assert_eq!(st["workbench"]["skills"][0]["id"], "github.com/acme/skills//skills/greetings/hello");
+    assert_eq!(st["workbench"]["skills"][0]["placements"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn agent_skill_install_and_remove() {
+    let s = Sandbox::new();
+    let st = s.json(&["agent-skill", "--agents", "claude"]);
+    assert_eq!(st["paths"].as_array().unwrap().len(), 1);
+    let md = std::fs::read_to_string(s.home.join(".claude/skills/new-tricks/SKILL.md")).unwrap();
+    assert!(md.contains("name: new-tricks") && md.contains("Bash(tricks search:*)"));
+    s.ok(&["agent-skill", "--remove"]);
+    assert!(std::fs::symlink_metadata(s.home.join(".claude/skills/new-tricks")).is_err());
+}
+
+#[test]
+fn starred_trust_facet() {
+    let s = Sandbox::new();
+    hello_repo(&s);
+    s.ok(&["source", "add", "acme/skills"]);
+    let o = s.cmd(&s.root(), &["--json", "search", "--no-live", "hello"]);
+    let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(r[0]["trust"], "unknown");
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_tricks"));
+    let o = c
+        .args(["--json", "search", "--no-live", "--trust", "starred", "hello"])
+        .env("TRICKS_HOME", &s.home)
+        .env("TRICKS_CONFIG_DIR", &s.config)
+        .env("TRICKS_DATA_DIR", &s.data)
+        .env("TRICKS_HOST_MAP", format!("github.com={}", s.fixtures.display()))
+        .env("TRICKS_NO_GH", "1")
+        .env("TRICKS_NO_API", "1")
+        .env("TRICKS_STARRED", "acme/skills")
+        .output()
+        .unwrap();
+    let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(r[0]["trust"], "starred", "{r}");
+    assert_eq!(r[0]["name"], "hello");
+}

@@ -37,7 +37,7 @@ pub struct SearchArgs {
     pub query: Vec<String>,
     #[arg(long)]
     pub agent: Option<String>,
-    /// official | yours | org | unknown
+    /// yours | org | official | starred | unknown
     #[arg(long)]
     pub trust: Option<String>,
     /// allow | weak-copyleft | strong-copyleft | non-commercial | block | unknown
@@ -170,6 +170,13 @@ pub enum Cmd {
     Agents,
     /// One-line status for agent status lines (cached state only, never the network)
     Statusline,
+    /// Install (or remove) the bundled `new-tricks` agent skill
+    AgentSkill {
+        #[arg(long, value_delimiter = ',')]
+        agents: Vec<String>,
+        #[arg(long)]
+        remove: bool,
+    },
     /// Prune unreferenced store entries
     Gc {
         #[arg(long)]
@@ -224,6 +231,7 @@ fn run(cli: Cli) -> Result<()> {
     let opts = Opts { offline, yes: cli.yes, json: cli.json, cwd: std::env::current_dir()? };
     let ctx = Ctx::new(opts, Box::new(CliUi { yes: cli.yes, quiet: cli.quiet || cli.json }))?;
     let json = cli.json;
+    first_run_offer(&ctx, &cli.cmd, cli.yes);
     match cli.cmd {
         Cmd::Search(a) => {
             let res = do_search(&ctx, &a)?;
@@ -427,6 +435,17 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{line}");
             }
         }
+        Cmd::AgentSkill { agents, remove } => {
+            let paths = if remove { crate::agentskill::remove(&ctx)? } else { crate::agentskill::install(&ctx, &agents)? };
+            emit(json, &serde_json::json!({ "removed": remove, "paths": paths }), |_| {
+                for p in &paths {
+                    println!("{} {p}", if remove { "removed" } else { "installed" });
+                }
+                if paths.is_empty() {
+                    println!("nothing to do");
+                }
+            });
+        }
         Cmd::Agents => {
             let rows: Vec<serde_json::Value> = crate::agents::AGENTS
                 .iter()
@@ -473,6 +492,30 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Workspace(w) => crate::cli_ws::run(&ctx, w)?,
     }
     Ok(())
+}
+
+/// Offer the bundled agent skill once, on the first interactive run (spec §12).
+fn first_run_offer(ctx: &Ctx, cmd: &Cmd, yes: bool) {
+    let skip = yes
+        || ctx.opts.json
+        || !ctx.ui.interactive()
+        || matches!(cmd, Cmd::Serve { .. } | Cmd::Statusline | Cmd::AgentSkill { .. } | Cmd::SelfUpdate { .. } | Cmd::Doctor);
+    if skip || !crate::agentskill::should_offer(ctx).unwrap_or(false) {
+        return;
+    }
+    let details = vec![
+        "It teaches Claude Code, Codex, Copilot and Cursor to search, preview, lint and draft skill changes on branches.".to_string(),
+        "It pre-approves only read-only and branch-confined `tricks` commands; installs and publishes still ask you.".to_string(),
+        "Change your mind any time: `tricks agent-skill` / `tricks agent-skill --remove`.".to_string(),
+    ];
+    let _ = crate::agentskill::mark_offered(ctx);
+    match ctx.ui.confirm("Install the New Tricks agent skill for your default agents?", &details) {
+        Ok(true) => match crate::agentskill::install(ctx, &[]) {
+            Ok(paths) => paths.iter().for_each(|p| ctx.ui.info(&format!("installed agent skill → {p}"))),
+            Err(e) => ctx.ui.warn(&format!("could not install the agent skill: {e:#}")),
+        },
+        _ => ctx.ui.info("skipped; run `tricks agent-skill` later if you want it"),
+    }
 }
 
 pub fn do_search(ctx: &Ctx, a: &SearchArgs) -> Result<Vec<crate::index::SearchResult>> {

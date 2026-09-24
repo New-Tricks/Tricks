@@ -123,6 +123,7 @@ pub fn show(ctx: &Ctx, input: &str) -> Result<ShowReport> {
         }
     }
     let identity = crate::sources::cached_identity(ctx, &r.id.source.host);
+    let starred = crate::sources::cached_starred(ctx, &r.id.source.host);
     Ok(ShowReport {
         canonical: r.canonical(),
         name: r.name.clone(),
@@ -140,7 +141,7 @@ pub fn show(ctx: &Ctx, input: &str) -> Result<ShowReport> {
         license,
         listed_in,
         installs,
-        trust: crate::index::trust_for(r.id.source.owner(), &identity).into(),
+        trust: crate::index::trust_for(r.id.source.owner(), &r.id.source.repo_path, &identity, &starred).into(),
         installed: crate::workbench::installed_ids(ctx)?.contains(&id),
         vendored: crate::workspace::vendored_upstreams(ctx)?.contains(&id),
         store_path: dir.to_string_lossy().to_string(),
