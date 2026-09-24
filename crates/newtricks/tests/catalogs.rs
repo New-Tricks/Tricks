@@ -46,8 +46,9 @@ fn signals(r: &serde_json::Value, catalog: &str) -> serde_json::Value {
 #[test]
 fn tessl_pointers_index_only_the_pointed_skill_and_carry_signals() {
     let mut s = Sandbox::new();
+    // Fixture directories are lowercase (IDs are); the Tessl URL below keeps GitHub's casing.
     s.upstream(
-        "Acme",
+        "acme",
         "tools",
         &[
             ("skills/pdf/SKILL.md", &skill_md("pdf", "Fill and merge PDF files", "body\n")),
