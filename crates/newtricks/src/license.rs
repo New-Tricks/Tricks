@@ -143,6 +143,8 @@ pub struct LicenseInputs {
     pub repo_root: Option<String>,
     /// SPDX id from the GitHub API (repository root), if queried.
     pub api_spdx: Option<String>,
+    /// SPDX id a catalog applies to everything it publishes (ClawHub: MIT-0).
+    pub catalog_terms: Option<String>,
 }
 
 pub fn is_license_file(name: &str) -> bool {
@@ -196,6 +198,8 @@ pub fn detect(inputs: &LicenseInputs) -> LicenseRecord {
             }
         } else if let Some(id) = inputs.api_spdx.as_deref().filter(|s| *s != "NOASSERTION") {
             results.push((classify_id(id), Some(id.to_string()), "github-api", 0.8));
+        } else if let Some(id) = inputs.catalog_terms.as_deref() {
+            results.push((classify_id(id), Some(id.to_string()), "catalog-terms", 1.0));
         }
     }
     if results.is_empty() {

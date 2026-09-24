@@ -49,7 +49,6 @@ Differentiators no current tool combines:
 | Managing remote repositories (private copies) | Dropped. The workspace repo *is* the customized copy; the user owns its remote. |
 | Project-level dependency management | Owned by APM. New Tricks does not replace `apm.yml`. |
 | Semantic / embedding search | Deferred; adapter model allows it later. |
-| Tessl and ClawHub adapters | Immediately after v1 (public no-auth APIs, live-query mode). |
 | LobeHub and long-tail directories | Deferred (client registration required, or no API / terms-of-service questions). |
 | Codex plugin marketplace file (`.agents/plugins/marketplace.json`) | Deferred; Codex installs the bare `skills/` layout already. |
 | Publish-time templating / transforms beyond excludes | Deferred. |
@@ -167,6 +166,17 @@ Every GitHub URL form normalizes to canonical:
 
 `/tree/<a>/<b>/…` is ambiguous when branch names contain slashes; resolve by matching the longest prefix that exists as a ref (API or `git ls-remote`).
 
+### Catalog-hosted skills
+
+Some catalogs host skills outside git. They use the same grammar, with the catalog as host:
+
+| Catalog | ID | Ref | Lock `commit` |
+|---|---|---|---|
+| `.well-known/agent-skills` | `example.com/.well-known/agent-skills//<name>` | — (the index digest) | `sha256:<digest>` |
+| ClawHub native | `clawhub.ai/<owner>/skills//<slug>` (mirrors ClawHub's `/<owner>/skills/<slug>` URLs, which normalize to it) | `@<version>` | `clawhub:<version>` |
+
+Updates compare the published digest or latest version with the lock. A ClawHub skill that ClawHub itself serves from GitHub (no published version; the download is a GitHub handoff) is installed as the git skill it points to.
+
 ### Content identity
 
 - **Version truth**: commit SHA. Tags and branches are labels.
@@ -184,6 +194,7 @@ Conventions follow Cargo (TOML; intent in the manifest, resolved facts in the lo
 [settings]
 agents         = ["claude", "codex"]     # default agents for `add`
 fetch_interval = "24h"
+live           = ["skills.sh", "tessl", "clawhub", "github"]   # live-query adapters used by search
 
 [workspaces]
 personal = "~/code/my-skills"
@@ -274,6 +285,8 @@ base_tree = "9f3c…"
 | `marketplace.json` | indexed | One adapter covers Claude plugin marketplaces **and** APM marketplaces (APM uses the same format). Reads `plugins[].source`, `skills[]` and `<plugin>/skills` |
 | skills.sh | live-query | Unauthenticated `GET https://skills.sh/api/search?q=&limit=` (the endpoint `npx skills find` uses). Returns `owner/repo`, name, install count — no path or description, which the git adapter fills in. Per-IP rate limit; the terms encourage caching. The bulk `/api/v1` listing requires a Vercel OIDC token, and sitemap crawling is not used |
 | GitHub code search | live-query | `SKILL.md` search with the user's token |
+| Tessl | live-query | Unauthenticated `GET https://api.tessl.io/experimental/search?q=&page[size]=`. Results are pointers into GitHub repositories (`sourceUrl` + `path`); only the pointed-to skill directories are indexed, since they often sit in large application repositories. Tessl's quality, aggregate score, security level and eval improvement are kept as listing signals; a MEDIUM/HIGH/CRITICAL security level becomes a risk flag |
+| ClawHub | live-query | Unauthenticated `GET https://clawhub.ai/api/v1/search?nonSuspiciousOnly=true` (skills ClawHub flags as suspicious are not shown). Mirrors of GitHub skills (e.g. from skills.sh) become git pointers. Native skills are catalog-hosted (§5): indexed from the skill and version detail, installed from ClawHub's ZIP with every file verified against the version's published SHA-256 list. Installs, downloads, stars, moderation verdict, security status and VirusTotal verdict are listing signals |
 | `.well-known/agent-skills/index.json` | indexed | agentskills.io discovery schema 0.2.0; covers any organization hosting its own index |
 | Pointer lists: `apm.yml`, `skills-lock.json` | indexed | `tricks source add ./project/apm.yml` surfaces what a project or team already uses. Interop only: never touches installed files |
 
@@ -392,6 +405,8 @@ Following Homebrew's model:
 ### Risk scan
 
 Every prepared update is scanned and summarized alongside the B → U diff: new or changed scripts, widened `allowed-tools`, new network or URL references, hidden or bidirectional Unicode. The same scanner powers lint's NT5xx rules and the publish risk diff.
+
+Catalog security signals are added to the risk surface in search and preview: Tessl security level MEDIUM or above; ClawHub suspicious flag, malware block, non-clean moderation or security status, and a VirusTotal `malicious` verdict. VirusTotal `suspicious` is shown but not flagged, because it fires on any shell usage.
 
 ## 10. Workspace authoring
 
@@ -521,6 +536,7 @@ Real skill repositories make this necessary: `anthropics/skills` has no root lic
 2. Frontmatter `license:` — parsed as an SPDX expression (lax); otherwise keywords ("Proprietary", "All rights reserved" → Block; "terms in LICENSE" → defer to step 1).
 3. Repository-root licence file from the vendored snapshot.
 4. GitHub licence API as last resort (404 → no licence; `NOASSERTION` → unknown).
+5. For catalog-hosted skills with no licence of their own: the catalog's publishing terms (ClawHub: "all skills published on ClawHub are licensed under MIT-0"). A skill's own restrictive licence still wins — re-uploads of proprietary skills stay blocked.
 
 When sources disagree the most restrictive result wins. The class, source and confidence are recorded in the workspace lock. For SPDX expressions, `OR` takes the most permissive branch and `AND` the most restrictive.
 
@@ -636,6 +652,7 @@ Short-name resolution: `pdf` alone resolves against the current workspace's `tri
 | Link / junction support per agent | Per-agent `follows_links` capability with copy fallback; Windows and Copilot-in-VS-Code on copy | §8 |
 | Codex duplicates and disables | Deduplicates by real path; disables not exposed (no assignment matrix) | §8 |
 | skills.sh access | Unauthenticated search endpoint as a live-query adapter; no bulk listing, no crawling | §7 |
+| Tessl and ClawHub access | Public, unauthenticated search APIs as live-query adapters; ClawHub-native skills are catalog-hosted with per-file SHA-256 verification | §5, §7 |
 | APM marketplace format | Same `marketplace.json` format as Claude; one adapter | §7 |
 | Licence detection | `spdx` crate, four-step detection, policy table, vendor-time warnings | §10, §11 |
 | `.git/info/exclude` with worktrees / submodules | Resolve via `git rev-parse --git-path`; shared across worktrees; marked block with reference counting | §8 |
@@ -654,7 +671,7 @@ Short-name resolution: `pdf` alone resolves against the current workspace's `tri
 
 | # | Milestone | Contents | Proves |
 |---|---|---|---|
-| M1 | Identity + search | ID grammar and URL normalization; indexed and live-query adapter modes; git, `marketplace.json` (Claude + APM), skills.sh (live), GitHub search (live), `.well-known`, and `apm.yml` / `skills-lock.json` pointer-list adapters; FTS5 index, facets, dedup, licence class; `search`, `show`, `source`; auth chain; `--json`. Works anonymously. | Federated search beats what exists |
+| M1 | Identity + search | ID grammar and URL normalization; indexed and live-query adapter modes; git, `marketplace.json` (Claude + APM), skills.sh, Tessl, ClawHub and GitHub search (live), `.well-known`, and `apm.yml` / `skills-lock.json` pointer-list adapters; FTS5 index, facets, dedup, licence class; `search`, `show`, `source`; auth chain; `--json`. Works anonymously. | Federated search beats what exists |
 | M2 | Workbench installs | Store in platform-native locations; placement for Claude Code, Codex, Copilot, Cursor with per-agent `follows_links` and copy fallback; workbench manifest and lock; `add/remove/install/update/outdated/status`; policies and risk scan; `link/unlink` with exclude handling and `--shadow`; §17 verification tests. Extension: Discover, Preview, Status bar. | Safe, reproducible install and trial |
 | M3 | Workspace authoring | `init/vendor/import/new`; three-way upstream merge; `edit/commit/use`, worktrees, `tricks.work.toml`; lint NT1–5xx; bundled agent skill. Extension: Workspace view, Problems, diff and merge editors. | The customize-and-experiment loop |
 | M4 | Publish | Targets, gates including licence policy, generated `marketplace.json` (single plugin + optional groups), metadata-only `apm.yml`, provenance, workspace versioning and changelog, `--push/--pr`, `tricks pr`; three-installer end-to-end test in CI. Extension: Publish pre-flight. | Bridge to APM and the ecosystem |

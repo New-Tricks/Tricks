@@ -237,6 +237,11 @@ pub fn normalize_url(input: &str) -> Result<Option<Normalized>> {
     if segs.len() < 2 {
         bail!("URL `{input}` does not name a repository");
     }
+    // ClawHub skill pages: https://clawhub.ai/<owner>/skills/<slug>
+    if host == "clawhub.ai" && segs.len() == 3 && segs[1] == "skills" {
+        let source = SourceId::new(&host, &format!("{}/skills", segs[0]));
+        return Ok(Some(Normalized::Skill(SkillSpec { source, selector: segs[2].to_string(), reference: None })));
+    }
     let is_github = host == "github.com" || host.starts_with("github.");
     if is_github {
         let source = SourceId::new(&host, &format!("{}/{}", segs[0], segs[1].trim_end_matches(".git")));
@@ -322,6 +327,18 @@ pub fn valid_skill_name(name: &str) -> bool {
     name_problems(name).is_empty()
 }
 
+/// Display form of a lock commit: 9-char git SHA, `sha256:` + 12 hex, or `clawhub:<version>`.
+pub fn short_commit(c: &str) -> &str {
+    let n = if c.starts_with("clawhub:") {
+        c.len()
+    } else if c.starts_with("sha256:") {
+        19
+    } else {
+        9
+    };
+    c.get(..c.len().min(n)).unwrap_or(c)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +406,12 @@ mod tests {
 
         let s = SkillSpec::parse("https://github.com/anthropics/skills/blob/v1.3.0/skills/pdf/SKILL.md").unwrap();
         assert_eq!(s.to_string(), "github.com/anthropics/skills//skills/pdf@v1.3.0");
+    }
+
+    #[test]
+    fn normalizes_clawhub_urls() {
+        let s = SkillSpec::parse("https://clawhub.ai/awspace/skills/pdf").unwrap();
+        assert_eq!(s.to_string(), "clawhub.ai/awspace/skills//pdf");
     }
 
     #[test]

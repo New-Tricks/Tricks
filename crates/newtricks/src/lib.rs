@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod agentskill;
+pub mod clawhub;
 pub mod cli;
 pub mod cli_ws;
 pub mod config;
@@ -10,6 +11,7 @@ pub mod deploy;
 pub mod doctor;
 pub mod git;
 pub mod github;
+pub mod hosted;
 pub mod id;
 pub mod index;
 pub mod inspect;
@@ -30,6 +32,7 @@ pub mod sources;
 pub mod state;
 pub mod statusline;
 pub mod store;
+pub mod tessl;
 pub mod treehash;
 pub mod wellknown;
 pub mod workbench;

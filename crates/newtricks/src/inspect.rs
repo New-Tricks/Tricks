@@ -83,6 +83,8 @@ pub struct ShowReport {
     pub installed: bool,
     pub vendored: bool,
     pub store_path: String,
+    /// Catalog signals (Tessl scores, ClawHub scan results, …).
+    pub signals: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 pub fn list_files(dir: &Path) -> Vec<FileEntry> {
@@ -101,15 +103,22 @@ pub fn list_files(dir: &Path) -> Vec<FileEntry> {
     v
 }
 
-pub fn show(ctx: &Ctx, input: &str) -> Result<ShowReport> {
-    let spec = crate::lookup::spec_from_input(ctx, input)?;
-    let r = resolve_skill(ctx, &spec, Fetch::IfStale)?;
-    let dir = store::from_mirror(ctx, &r.mirror, &r.reference.commit, &r.id.path, &r.tree)?;
+/// Where the content being shown came from.
+struct Origin {
+    id: crate::id::SkillId,
+    canonical: String,
+    name: String,
+    commit: String,
+    ref_kind: String,
+    ref_name: String,
+    tree: String,
+}
+
+fn report(ctx: &Ctx, o: Origin, dir: &Path, license: LicenseRecord) -> Result<ShowReport> {
     let text = std::fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
     let doc = SkillDoc::parse(&text);
-    let risk = RiskReport::scan_dir(&dir);
-    let license = detect_license_in_dir(ctx, &r, &dir);
-    let id = r.id.to_string();
+    let risk = RiskReport::scan_dir(dir);
+    let id = o.id.to_string();
     let mut listed_in = Vec::new();
     let mut installs = None;
     {
@@ -122,31 +131,101 @@ pub fn show(ctx: &Ctx, input: &str) -> Result<ShowReport> {
             }
         }
     }
-    let identity = crate::sources::cached_identity(ctx, &r.id.source.host);
-    let starred = crate::sources::cached_starred(ctx, &r.id.source.host);
+    let identity = crate::sources::cached_identity(ctx, &o.id.source.host);
+    let starred = crate::sources::cached_starred(ctx, &o.id.source.host);
+    let signals = crate::index::skill_signals(ctx, &id);
+    let mut risk_summary = risk.summary();
+    risk_summary.extend(crate::index::signal_risks(&signals));
     Ok(ShowReport {
-        canonical: r.canonical(),
-        name: r.name.clone(),
+        canonical: o.canonical,
+        name: o.name,
         description: doc.description.clone(),
-        commit: r.reference.commit.clone(),
-        ref_kind: r.reference.kind.clone(),
-        ref_name: r.reference.name.clone(),
-        tree: r.tree.clone(),
+        commit: o.commit,
+        ref_kind: o.ref_kind,
+        ref_name: o.ref_name,
+        tree: o.tree,
         frontmatter: doc.frontmatter.clone(),
         frontmatter_error: doc.parse_error.clone(),
         body: doc.body.clone(),
-        files: list_files(&dir),
-        risk_summary: risk.summary(),
+        files: list_files(dir),
+        risk_summary,
         risk,
         license,
         listed_in,
         installs,
-        trust: crate::index::trust_for(r.id.source.owner(), &r.id.source.repo_path, &identity, &starred).into(),
+        trust: crate::index::trust_for(o.id.source.owner(), &o.id.source.repo_path, &identity, &starred).into(),
         installed: crate::workbench::installed_ids(ctx)?.contains(&id),
         vendored: crate::workspace::vendored_upstreams(ctx)?.contains(&id),
         store_path: dir.to_string_lossy().to_string(),
+        signals,
         id,
     })
+}
+
+/// Fetch a catalog-hosted skill into the store (following GitHub handoffs).
+fn hosted_dir(ctx: &Ctx, spec: &crate::id::SkillSpec) -> Result<Option<(Origin, std::path::PathBuf)>> {
+    let id = crate::id::SkillId::new(spec.source.clone(), &spec.selector);
+    if crate::hosted::kind(&id).is_none() {
+        return Ok(None);
+    }
+    match crate::hosted::fetch(ctx, &id, spec.reference.as_deref().filter(|r| *r != "latest"))? {
+        crate::hosted::Outcome::Redirect(git_id) => {
+            let s = crate::id::SkillSpec::parse(&git_id)?;
+            let r = resolve_skill(ctx, &s, Fetch::IfStale)?;
+            let dir = store::from_mirror(ctx, &r.mirror, &r.reference.commit, &r.id.path, &r.tree)?;
+            Ok(Some((
+                Origin {
+                    canonical: r.canonical(),
+                    name: r.name.clone(),
+                    commit: r.reference.commit.clone(),
+                    ref_kind: r.reference.kind.clone(),
+                    ref_name: r.reference.name.clone(),
+                    tree: r.tree.clone(),
+                    id: r.id,
+                },
+                dir,
+            )))
+        }
+        crate::hosted::Outcome::Fetched(f) => {
+            let (dir, tree) = store::from_dir(ctx, f.dir.path())?;
+            let name = SkillDoc::parse(&std::fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default())
+                .name
+                .unwrap_or_else(|| id.folder_name().to_string());
+            Ok(Some((
+                Origin {
+                    canonical: format!("{id}@{}", f.label),
+                    name,
+                    commit: f.commit,
+                    ref_kind: f.ref_kind.into(),
+                    ref_name: f.label,
+                    tree,
+                    id,
+                },
+                dir,
+            )))
+        }
+    }
+}
+
+pub fn show(ctx: &Ctx, input: &str) -> Result<ShowReport> {
+    let spec = crate::lookup::spec_from_input(ctx, input)?;
+    if let Some((o, dir)) = hosted_dir(ctx, &spec)? {
+        let license = crate::hosted::license(&o.id, &dir);
+        return report(ctx, o, &dir, license);
+    }
+    let r = resolve_skill(ctx, &spec, Fetch::IfStale)?;
+    let dir = store::from_mirror(ctx, &r.mirror, &r.reference.commit, &r.id.path, &r.tree)?;
+    let license = detect_license_in_dir(ctx, &r, &dir);
+    let o = Origin {
+        canonical: r.canonical(),
+        name: r.name.clone(),
+        commit: r.reference.commit.clone(),
+        ref_kind: r.reference.kind.clone(),
+        ref_name: r.reference.name.clone(),
+        tree: r.tree.clone(),
+        id: r.id.clone(),
+    };
+    report(ctx, o, &dir, license)
 }
 
 /// Read one file of a (possibly remote) skill for preview. Never executes anything.
@@ -156,6 +235,10 @@ pub fn read_file(ctx: &Ctx, input: &str, rel: &str) -> Result<(String, Vec<u8>)>
         anyhow::bail!("invalid path `{rel}`");
     }
     let spec = crate::lookup::spec_from_input(ctx, input)?;
+    if let Some((o, dir)) = hosted_dir(ctx, &spec)? {
+        let bytes = std::fs::read(dir.join(rel)).with_context(|| format!("{rel} not found in {}", o.canonical))?;
+        return Ok((o.canonical, bytes));
+    }
     let r = resolve_skill(ctx, &spec, Fetch::Never).or_else(|_| resolve_skill(ctx, &spec, Fetch::IfStale))?;
     let dir = store::from_mirror(ctx, &r.mirror, &r.reference.commit, &r.id.path, &r.tree)?;
     let p = dir.join(rel);

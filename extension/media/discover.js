@@ -56,6 +56,8 @@
       if (r.listed_in && r.listed_in.length) add("in " + r.listed_in.length + " catalog(s)");
       if (r.duplicates && r.duplicates.length) add(r.duplicates.length + " identical cop" + (r.duplicates.length > 1 ? "ies" : "y"));
       if (r.variants) add(r.variants + " variant(s)");
+      const tq = r.signals && r.signals.tessl && r.signals.tessl.quality;
+      if (typeof tq === "number") add("Tessl quality " + Math.round(tq * 100) + "%");
       for (const k of r.risk || []) add(k, "risk");
       if (r.installed) add("installed", "state");
       if (r.vendored) add("vendored", "state");

@@ -22,9 +22,10 @@ The VS Code extension (also Cursor, Windsurf, VSCodium) lives in [`extension/`](
 ## Quick start
 
 ```bash
-# Discover: one search over skill repos, marketplaces, skills.sh and GitHub
+# Discover: one search over skill repos, marketplaces, skills.sh, Tessl, ClawHub and GitHub
 tricks search pdf forms --license allow --no-scripts
-tricks show anthropics/skills//skill-creator          # licence, risk, files, body
+tricks show anthropics/skills//skill-creator          # licence, risk, catalog signals, files, body
+tricks add clawhub.ai/awspace/skills//pdf             # ClawHub-hosted: SHA-256 verified per file
 
 # Install for your agents (user scope, content-addressed store + links)
 tricks add anthropics/skills//skill-creator --agents claude,codex

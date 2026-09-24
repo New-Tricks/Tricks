@@ -277,14 +277,9 @@ fn run(cli: Cli) -> Result<()> {
                             if s.disabled { "  [disabled]" } else { "" }
                         );
                     }
-                    println!(
-                        "live: skills.sh{}",
-                        if ctx.gh.token("github.com").is_some() {
-                            ", GitHub code search"
-                        } else {
-                            " (GitHub code search needs `gh auth login`)"
-                        }
-                    );
+                    let live = crate::workbench::load_manifest(&ctx).map(|m| m.settings.live).unwrap_or_default();
+                    let gh = if ctx.gh.token("github.com").is_some() { "" } else { " (GitHub code search needs `gh auth login`)" };
+                    println!("live: {}{gh}", live.join(", "));
                 });
             }
             SourceCmd::Remove { input } => {
@@ -522,11 +517,24 @@ pub fn do_search(ctx: &Ctx, a: &SearchArgs) -> Result<Vec<crate::index::SearchRe
     let q = a.query.join(" ");
     let _ = crate::sources::refresh(ctx, a.refresh, None)?;
     if !a.no_live && !ctx.opts.offline && !q.trim().is_empty() {
-        if let Err(e) = crate::sources::live_skills_sh(ctx, &q, 6) {
-            ctx.ui.warn(&format!("skills.sh: {e:#}"));
+        let live = crate::workbench::load_manifest(ctx)?.settings.live;
+        let on = |c: &str| live.iter().any(|x| x == c);
+        let report = |name: &str, r: Result<usize>| {
+            if let Err(e) = r {
+                ctx.ui.warn(&format!("{name}: {e:#}"));
+            }
+        };
+        if on("skills.sh") {
+            report("skills.sh", crate::sources::live_skills_sh(ctx, &q, 6));
         }
-        if let Err(e) = crate::sources::live_github_search(ctx, &q, 5) {
-            ctx.ui.warn(&format!("GitHub code search: {e:#}"));
+        if on("tessl") {
+            report("Tessl", crate::tessl::live_search(ctx, &q, 20));
+        }
+        if on("clawhub") {
+            report("ClawHub", crate::clawhub::live_search(ctx, &q, 20));
+        }
+        if on("github") {
+            report("GitHub code search", crate::sources::live_github_search(ctx, &q, 5));
         }
     }
     let f = Filters {
@@ -543,7 +551,7 @@ pub fn do_search(ctx: &Ctx, a: &SearchArgs) -> Result<Vec<crate::index::SearchRe
 }
 
 pub fn short(c: &str) -> &str {
-    &c[..c.len().min(9)]
+    crate::id::short_commit(c)
 }
 
 pub fn ago(t: i64) -> String {
@@ -572,6 +580,9 @@ fn print_search(res: &Vec<crate::index::SearchResult>) {
         }
         if let Some(s) = r.stars {
             tags.push(format!("★{}", human_n(s)));
+        }
+        if let Some(q) = r.signals.get("tessl").and_then(|t| t.get("quality")).and_then(|x| x.as_f64()) {
+            tags.push(format!("Tessl quality {:.0}%", q * 100.0));
         }
         if r.installed {
             tags.push("installed".into());
@@ -635,6 +646,18 @@ fn print_show(r: &crate::inspect::ShowReport) {
     }
     if !r.listed_in.is_empty() {
         println!("  listed   {}", r.listed_in.join(", "));
+    }
+    for (catalog, sig) in &r.signals {
+        let parts: Vec<String> = sig
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, v)| format!("{k}={}", v.as_str().map(String::from).unwrap_or_else(|| v.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        println!("  {catalog:<8} {}", parts.join(" "));
     }
     println!("  state    {}{}", if r.installed { "installed" } else { "not installed" }, if r.vendored { ", vendored" } else { "" });
     println!("  files:");

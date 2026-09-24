@@ -176,6 +176,65 @@ pub fn add_listing(ctx: &Ctx, skill_id: &str, catalog: &str, installs: Option<i6
     Ok(())
 }
 
+/// Record catalog-specific signals (JSON) for a listing, e.g. Tessl quality scores or
+/// ClawHub's suspicious flag. Shown in search results and `show`.
+pub fn add_listing_signals(ctx: &Ctx, skill_id: &str, catalog: &str, installs: Option<i64>, signals: &serde_json::Value) -> Result<()> {
+    add_listing(ctx, skill_id, catalog, installs, None)?;
+    ctx.state
+        .conn
+        .execute("UPDATE listings SET signals=?1 WHERE skill_id=?2 AND catalog=?3", params![signals.to_string(), skill_id, catalog])?;
+    Ok(())
+}
+
+/// Human-readable risk flags derived from catalog signals.
+pub fn signal_risks(signals: &BTreeMap<String, serde_json::Value>) -> Vec<String> {
+    let mut v = Vec::new();
+    if let Some(t) = signals.get("tessl")
+        && let Some(level) = t.get("security").and_then(|x| x.as_str())
+        && matches!(level, "MEDIUM" | "HIGH" | "CRITICAL")
+    {
+        v.push(format!("Tessl security findings: {level}"));
+    }
+    if let Some(c) = signals.get("clawhub") {
+        if c.get("suspicious").and_then(|x| x.as_bool()) == Some(true) {
+            v.push("flagged suspicious by ClawHub".into());
+        }
+        if let Some(st) = c.get("security_status").and_then(|x| x.as_str())
+            && st != "clean"
+        {
+            v.push(format!("ClawHub security scan: {st}"));
+        }
+        if c.get("malware_blocked").and_then(|x| x.as_bool()) == Some(true) {
+            v.push("blocked as malware by ClawHub".into());
+        }
+        if let Some(m) = c.get("moderation").and_then(|x| x.as_str())
+            && m != "clean"
+        {
+            v.push(format!("ClawHub moderation: {m}"));
+        }
+        // VirusTotal's "suspicious" fires on any shell usage; only a malicious verdict
+        // is a risk on its own (the verdict is still shown in `show`).
+        if c.get("virustotal").and_then(|x| x.as_str()) == Some("malicious") {
+            v.push("VirusTotal verdict: malicious".into());
+        }
+    }
+    v
+}
+
+pub fn skill_signals(ctx: &Ctx, id: &str) -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    if let Ok(mut st) = ctx.state.conn.prepare("SELECT catalog, signals FROM listings WHERE skill_id=?1 AND signals IS NOT NULL")
+        && let Ok(rows) = st.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+    {
+        for (cat, sig) in rows.flatten() {
+            if let Ok(v) = serde_json::from_str(&sig) {
+                out.insert(cat, v);
+            }
+        }
+    }
+    out
+}
+
 pub fn skill_exists(ctx: &Ctx, id: &str) -> Result<bool> {
     Ok(ctx.state.conn.query_row("SELECT 1 FROM skills WHERE id=?1", [id], |_| Ok(())).optional()?.is_some())
 }
@@ -208,6 +267,8 @@ pub struct Filters {
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
     pub id: String,
+    /// Catalog-specific signals, e.g. `{"tessl": {"quality": 0.9, "security": "LOW"}}`.
+    pub signals: BTreeMap<String, serde_json::Value>,
     pub name: String,
     pub description: String,
     pub source: String,
@@ -307,13 +368,23 @@ pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<S
     // Listings (catalogs, installs, categories) and repo stars.
     type Listing = (Vec<String>, Option<i64>, Vec<String>);
     let mut listings: HashMap<String, Listing> = HashMap::new();
+    let mut signals: HashMap<String, BTreeMap<String, serde_json::Value>> = HashMap::new();
     {
-        let mut st = c.prepare("SELECT skill_id, catalog, installs, category FROM listings")?;
+        let mut st = c.prepare("SELECT skill_id, catalog, installs, category, signals FROM listings")?;
         let it = st.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<String>>(3)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
         })?;
         for r in it {
-            let (id, cat, inst, category) = r?;
+            let (id, cat, inst, category, sig) = r?;
+            if let Some(v) = sig.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+                signals.entry(id.clone()).or_default().insert(cat.clone(), v);
+            }
             let e = listings.entry(id).or_default();
             e.0.push(cat);
             if let Some(i) = inst {
@@ -452,6 +523,8 @@ pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<S
         if network {
             risk.push("network references".into());
         }
+        let sigs = signals.get(&id).cloned().unwrap_or_default();
+        risk.extend(signal_risks(&sigs));
 
         let trust_w = match trust.as_str() {
             "official" => 1.5,
@@ -470,6 +543,7 @@ pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<S
         let variants = names.get(&name).map(|t| t.len().saturating_sub(1)).unwrap_or(0);
         results.push(SearchResult {
             vendored: vendored.contains(&id),
+            signals: sigs,
             id,
             name,
             description,
