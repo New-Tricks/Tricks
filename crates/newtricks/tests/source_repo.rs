@@ -181,7 +181,8 @@ fn overlapping_change_conflicts_then_continue_or_abort() {
     git(&up, &["tag", "v1.1.0"]);
     set_interval_zero(&s);
     let lock_before = read(&ws.join("tricks.lock"));
-    let r = s.json_in(&ws, &["update"]);
+    // Stopping on conflicts exits non-zero, so scripts notice.
+    let r = s.json_any_in(&ws, &["update"]);
     assert_eq!(r["items"][0]["state"], "conflicts", "{r}");
     assert!(read(&p).contains("<<<<<<<"));
     assert_eq!(read(&ws.join("tricks.lock")), lock_before, "base must not move while conflicted");
@@ -195,7 +196,7 @@ fn overlapping_change_conflicts_then_continue_or_abort() {
     s.ok_in(&ws, &["update", "--abort"]);
     assert!(read(&p).contains("Keep it VERY short.") && !read(&p).contains("<<<<<<<"));
     // Redo and resolve.
-    s.ok_in(&ws, &["update"]);
+    let _ = s.cmd(&ws, &["update"]);
     let resolved = read(&p)
         .lines()
         .filter(|l| !l.starts_with("<<<<<<<") && !l.starts_with("=======") && !l.starts_with(">>>>>>>") && !l.contains("Keep it brief."))
@@ -277,6 +278,10 @@ fn branch_experiments_and_variants() {
     let again = s.json_in(&ws, &["edit", "greeter", "--branch", "terse"]);
     assert_eq!(again["placements"].as_array().unwrap().len(), 1, "{again}");
     std::fs::write(path.join("SKILL.md"), read(&path.join("SKILL.md")).replace("## Instructions", "## Instructions (terse)")).unwrap();
+    // Inside the draft, `working` and `head` are the draft's.
+    let d = s.ok_in(&path, &["diff", "greeter"]);
+    assert!(d.contains("+## Instructions (terse)"), "{d}");
+    assert!(s.ok_in(&ws, &["diff", "greeter"]).contains("no differences"), "the main checkout is unchanged");
     let c = s.json_in(&ws, &["edit", "greeter", "--commit", "-m", "terse variant"]);
     assert_eq!(c["branch"], "terse", "{c}");
     assert!(git(&worktree, &["status", "--porcelain"]).is_empty());
@@ -301,6 +306,10 @@ fn branch_experiments_and_variants() {
     // `link greeter` (no branch) un-pins it.
     s.ok_in(&ws, &["link", "greeter", "--to", app.to_str().unwrap(), "--agents", "claude"]);
     assert_eq!(std::fs::read_link(&pinned).unwrap(), ws.join("skills/greeter"));
+    // `--reset` takes the skill alone: with a branch it is refused, not a variant choice.
+    let err = s.fail_in(&ws, &["use", "greeter@terse", "--reset"]);
+    assert!(err.contains("tricks use greeter --reset"), "{err}");
+    assert!(!read(&ws.join("tricks.toml")).contains("use = "));
     // Use the variant: store snapshot of the branch tip.
     s.ok_in(&ws, &["use", "greeter@terse"]);
     let t = std::fs::read_link(&deployed).unwrap();
@@ -316,6 +325,51 @@ fn branch_experiments_and_variants() {
     let skills = st["source_repo"]["skills"].as_array().unwrap();
     let g = skills.iter().find(|x| x["name"] == "greeter").unwrap();
     assert!(g["branches"].as_array().unwrap().iter().any(|b| b == "terse"), "{g}");
+}
+
+#[test]
+fn a_merge_resolved_with_git_is_finished_by_the_next_command() {
+    let (s, _up, ws) = setup();
+    s.ok_in(
+        &ws,
+        &["create", "greeter", "--description", "Writes greetings for any occasion. Use when the user asks for a greeting card text."],
+    );
+    commit_all(&ws, "new greeter");
+    // Copies do not follow edits: they are not labelled live.
+    s.ok_in(&ws, &["link", "--agents", "claude", "--copy"]);
+    let links = s.ok_in(&ws, &["list", "--links"]);
+    assert!(links.contains("main (working tree, copy)") && !links.contains("live"), "{links}");
+    s.ok_in(&ws, &["unlink"]);
+    // A draft that changes the same line as main, and a project link pinned to it.
+    let out = s.json_in(&ws, &["edit", "greeter", "-b", "terse"]);
+    let wt = PathBuf::from(out["worktree"].as_str().unwrap());
+    let g = wt.join("skills/greeter/SKILL.md");
+    std::fs::write(&g, read(&g).replace("## Instructions", "## Instructions (terse)")).unwrap();
+    s.ok_in(&ws, &["edit", "greeter", "--commit", "-m", "terse"]);
+    let app = s.project("app");
+    s.ok_in(&ws, &["link", "greeter@terse", "--to", app.to_str().unwrap(), "--agents", "claude"]);
+    let mg = ws.join("skills/greeter/SKILL.md");
+    std::fs::write(&mg, read(&mg).replace("## Instructions", "## Instructions (main)")).unwrap();
+    commit_all(&ws, "main edit");
+    let r = s.json_in(&ws, &["merge", "greeter@terse"]);
+    assert!(!r["conflicts"].as_array().unwrap().is_empty(), "{r}");
+    // Nothing is finished while the conflict is open.
+    s.ok_in(&ws, &["list"]);
+    assert_eq!(s.json_in(&ws, &["list"])["source_repo"]["skills"][0]["editing"], "terse");
+    // Resolve and commit with plain git; the next command finishes the merge.
+    let resolved: String = read(&mg)
+        .lines()
+        .filter(|l| !l.starts_with("<<<<<<<") && !l.starts_with("=======") && !l.starts_with(">>>>>>>") && !l.contains("(main)"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&mg, resolved).unwrap();
+    commit_all(&ws, "merge terse into greeter");
+    let st = s.json_in(&ws, &["list"]);
+    assert!(st["source_repo"]["skills"][0]["editing"].is_null(), "editing ended: {st}");
+    let pinned = app.join(".claude/skills/greeter");
+    assert_eq!(std::fs::read_link(&pinned).unwrap(), ws.join("skills/greeter"), "the pinned link moved to main");
+    let links = s.json_in(&ws, &["list", "--links"]);
+    assert!(links["links"].as_array().unwrap().iter().all(|l| l["pinned"] == false), "{links}");
 }
 
 #[test]
@@ -381,7 +435,11 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
     assert!(read(&target.join("PROVENANCE.md")).contains("github.com/acme/skills//skills/hello"));
     assert!(read(&target.join("CHANGELOG.md")).contains("## v0.1.0"));
     let msg = git(&target, &["log", "-1", "--format=%B"]);
-    assert!(msg.contains("Tricks-Source:"), "{msg}");
+    assert!(msg.contains("Tricks-Source: local:my-skills@"), "a source repo without a remote is named, not located: {msg}");
+    let root = ws.canonicalize().unwrap();
+    for published in [read(&target.join("PROVENANCE.md")), msg.clone()] {
+        assert!(!published.contains(root.to_str().unwrap()) && !published.contains(ws.to_str().unwrap()), "local path leaked: {published}");
+    }
     assert_eq!(git(&remote, &["tag", "--list"]), "v0.1.0");
 
     // Re-publish after deselecting a skill: removes it, keeps hand-added files.

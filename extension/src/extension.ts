@@ -364,7 +364,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     if (!r) return;
     await refreshAll();
     await openSkillMd(r.path);
-    vscode.window.showInformationMessage(`Editing ${name} on ${branch}. Linked agents now load this draft; save it with “Commit Draft…”, then “Merge Branch…”.`);
+    // Links are left alone: a link pinned to the branch deploys the draft.
+    const link = "Link to Project…";
+    vscode.window
+      .showInformationMessage(`Editing ${name} on ${branch}. To try the draft with agents, link it to a project pinned to ${branch}; save it with “Commit Draft…”, then “Merge Branch…”.`, link)
+      .then((c) => {
+        if (c === link) vscode.commands.executeCommand("tricks.linkToProject", name);
+      });
   });
 
   reg("tricks.commitDraft", async (arg?: unknown) => {
@@ -414,7 +420,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     const name = await pickRepoSkill(arg, (s) => !!s.editing);
     if (!name) return;
     const r = await withProgress(`New Tricks: finishing ${name}`, () => client.request("sourceRepo/edit", { skill: name, done: true }));
-    if (r) vscode.window.showInformationMessage(`Finished editing ${name}; links deploy its active variant again.`);
+    if (r) vscode.window.showInformationMessage(`Finished editing ${name}${r.branch ? `; links pinned to ${r.branch} now deploy its last commit` : ""}.`);
     await refreshAll();
   });
 

@@ -125,7 +125,7 @@ pub fn add(ctx: &Ctx, input: &str, kind: Option<&str>) -> Result<(String, Kind)>
     let (key, k) = normalize_input(ctx, input, kind)?;
     let path = ctx.paths.user_config();
     let mut doc = config::load_doc(&path)?;
-    let entry = CatalogEntry { kind: if k == Kind::Repo { None } else { Some(k.as_str().into()) }, url: None };
+    let entry = CatalogEntry { kind: if k == Kind::Repo { None } else { Some(k.as_str().into()) } };
     config::table_mut(&mut doc, &["catalogs"]).insert(&key, config::to_inline(&entry)?);
     config::save_doc(&path, &doc)?;
     Ok((key, k))

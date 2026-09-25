@@ -201,7 +201,8 @@ fn clawhub_native_skill_search_try_vendor_merge_and_hash_verification() {
 
     // A download that does not match the published hashes is refused; nothing changes.
     hub.publish("acme", "invoice", "1.2.0", &[("SKILL.md", md("v3").as_bytes()), ("references/fields.md", b"fields\n")], true);
-    let bad = s.json_in(&ws, &["update"]);
+    assert!(!s.cmd(&ws, &["--json", "update"]).status.success(), "a failed update exits non-zero");
+    let bad = s.json_any_in(&ws, &["update"]);
     assert_eq!(bad["items"][0]["state"], "error", "{bad}");
     assert!(bad["items"][0]["message"].as_str().unwrap().contains("does not match its published SHA-256"), "{bad}");
     assert!(read(&sk).contains("v2"));

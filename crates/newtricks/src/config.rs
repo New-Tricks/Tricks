@@ -17,10 +17,10 @@ pub const PUBLISHED_FILE: &str = ".tricks-published";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Policy {
-    /// Upstream changes are reported and merged on request (`tricks merge`).
+    /// Upstream changes are reported and merged on request (`tricks update`).
     #[default]
     Review,
-    /// Stay on the recorded base; `tricks merge` skips it unless named.
+    /// Stay on the recorded base; `tricks update` skips it unless named.
     Pinned,
     /// Stop checking upstream.
     Paused,
@@ -63,8 +63,6 @@ impl Default for Settings {
 pub struct CatalogEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -378,6 +376,47 @@ pub fn find_source_repo(start: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    /// Keys of a serialized value, as the TOML file spells them.
+    fn keys<T: Serialize>(v: &T) -> BTreeSet<String> {
+        serde_json::to_value(v).unwrap().as_object().unwrap().keys().cloned().collect()
+    }
+
+    fn schema_keys(v: &serde_json::Value) -> BTreeSet<String> {
+        v["properties"].as_object().unwrap().keys().cloned().collect()
+    }
+
+    /// The extension's `tricks.toml` schema (completion and validation) lists exactly the
+    /// keys the code reads.
+    #[test]
+    fn json_schema_matches_config() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!("../../../extension/schemas/tricks.schema.json")).unwrap();
+        let p = &schema["properties"];
+        let skill = RepoSkill {
+            path: "p".into(),
+            upstream: Some("u".into()),
+            track: Some("t".into()),
+            update: Some(Policy::Review),
+            use_branch: Some("b".into()),
+            license_override: Some(LicenseOverride { justification: "j".into() }),
+        };
+        let target =
+            PublishTarget { marketplace: Some("m".into()), owner: Some("o".into()), description: Some("d".into()), ..Default::default() };
+        let repo = RepoSettings { name: Some("n".into()), agents: vec!["claude".into()] };
+        let catalog = CatalogEntry { kind: Some("repo".into()) };
+        let mut top = keys(&UserConfig::default());
+        top.extend(keys(&SourceRepoManifest::default()));
+        assert_eq!(schema_keys(&schema), top, "top-level tables");
+        assert_eq!(schema_keys(&p["settings"]), keys(&Settings::default()), "[settings]");
+        assert_eq!(schema_keys(&p["catalogs"]["additionalProperties"]), keys(&catalog), "[catalogs.*]");
+        assert_eq!(schema_keys(&p["source-repo"]), keys(&repo), "[source-repo]");
+        assert_eq!(schema_keys(&p["skills"]["additionalProperties"]), keys(&skill), "[skills.*]");
+        assert_eq!(schema_keys(&p["lint"]), keys(&LintConfig::default()), "[lint]");
+        assert_eq!(schema_keys(&p["publish"]["properties"]["targets"]["additionalProperties"]), keys(&target), "[publish.targets.*]");
+        let policies: Vec<&str> = schema["definitions"]["policy"]["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(policies, [Policy::Review, Policy::Pinned, Policy::Paused].map(|p| p.as_str()));
+    }
 
     #[test]
     fn durations() {

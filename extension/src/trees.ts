@@ -136,11 +136,13 @@ export function linkSkillName(l: LinkInfo): string {
   return l.skill.replace(/^github\.com\//, "");
 }
 
-/** What a source repo skill's link deploys: `main (live)`, `terse (draft, pinned)`, `verbose @ 3f2a1c9`. */
+/** What a source repo skill's link deploys: `main (live)`, `main (copy)`, `terse (draft, pinned)`, `verbose @ 3f2a1c9`. */
 export function linkBranch(l: LinkInfo): string {
   if (!l.source) return "";
   const b = l.branch ?? "detached";
-  const notes = [l.source === "snapshot" ? "" : l.source === "draft" ? "draft" : "live", l.pinned ? "pinned" : ""].filter(Boolean);
+  // A copy does not follow edits: it is refreshed only when the link is placed again.
+  const liveness = l.source === "snapshot" ? "" : l.mode === "copy" ? "copy" : l.source === "draft" ? "" : "live";
+  const notes = [l.source === "draft" ? "draft" : "", liveness, l.pinned ? "pinned" : ""].filter(Boolean);
   const at = l.source === "snapshot" && l.commit ? ` @ ${l.commit.slice(0, 7)}` : "";
   return `${b}${at}${notes.length ? ` (${notes.join(", ")})` : ""}`;
 }
