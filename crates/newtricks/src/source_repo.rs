@@ -190,15 +190,7 @@ pub fn init(ctx: &Ctx, name: Option<&str>, agent_skill: bool) -> Result<InitRepo
         std::fs::write(&manifest, text)?;
         SourceRepoLock { version: 1, ..Default::default() }.save(&root)?;
         std::fs::create_dir_all(root.join("skills"))?;
-        let gi = root.join(".gitignore");
-        let mut g = std::fs::read_to_string(&gi).unwrap_or_default();
-        if !g.lines().any(|l| l.trim() == config::WORK_FILE) {
-            if !g.is_empty() && !g.ends_with('\n') {
-                g.push('\n');
-            }
-            g.push_str(&format!("{}\n", config::WORK_FILE));
-            std::fs::write(&gi, g)?;
-        }
+        ensure_ignored(&root)?;
     }
     let ws = SourceRepo::open(&root)?;
     // Register in the user config.
@@ -982,8 +974,30 @@ fn editing_key(ws: &SourceRepo, name: &str) -> String {
     format!("editing:{}:{name}", ws.root.display())
 }
 
-fn worktree_path(ctx: &Ctx, ws: &SourceRepo, branch: &str) -> PathBuf {
-    ctx.paths.work().join(ws.key()).join(branch.replace('/', "--"))
+/// The worktree of an experiment branch: `<repo>/.tricks/work/<branch>` (git-ignored), so
+/// it sits next to the skills in the editor and inside the repo agents may write to.
+fn worktree_path(_ctx: &Ctx, ws: &SourceRepo, branch: &str) -> PathBuf {
+    ws.root.join(config::WORK_DIR).join(branch.replace('/', "--"))
+}
+
+/// Make sure `.gitignore` ignores the work file and the experiment worktrees.
+fn ensure_ignored(root: &Path) -> Result<()> {
+    let gi = root.join(".gitignore");
+    let mut g = std::fs::read_to_string(&gi).unwrap_or_default();
+    let mut changed = false;
+    for entry in [config::WORK_FILE, "/.tricks/"] {
+        if !g.lines().any(|l| l.trim() == entry || l.trim() == entry.trim_start_matches('/')) {
+            if !g.is_empty() && !g.ends_with('\n') {
+                g.push('\n');
+            }
+            g.push_str(&format!("{entry}\n"));
+            changed = true;
+        }
+    }
+    if changed {
+        std::fs::write(&gi, g)?;
+    }
+    Ok(())
 }
 
 fn snapshot_key(ws: &SourceRepo, name: &str) -> String {
@@ -1154,54 +1168,48 @@ pub struct EditReport {
     pub path: String,
     pub worktree: Option<String>,
     pub placements: Vec<String>,
-    pub vendored: bool,
 }
 
-pub fn edit(ctx: &Ctx, input: &str, branch: Option<&str>) -> Result<EditReport> {
-    let mut ws = require(ctx)?;
-    let mut vendored = false;
-    let name = if ws.manifest.skills.contains_key(input) {
-        input.to_string()
-    } else {
-        // An upstream skill: vendor it first (copy-on-write).
-        let spec = crate::lookup::spec_from_input(ctx, input).with_context(|| format!("`{input}` is not a source repo skill"))?;
-        if !ctx.confirm(&format!("`{input}` is not in this source repo. Vendor {spec} into it?"), &[])? {
-            bail!("cancelled");
-        }
-        let r = vendor(ctx, &ws, input, &VendorOptions::default())?;
-        ws.reload()?;
-        vendored = true;
-        r.name
+/// Default branch for `tricks edit <skill>`.
+pub fn draft_branch(name: &str) -> String {
+    format!("draft/{name}")
+}
+
+/// `tricks edit <skill> [-b <branch>]`: start (or continue) an experiment on a branch,
+/// checked out in `.tricks/work/<branch>`; the skill's links follow the draft.
+pub fn edit(ctx: &Ctx, name: &str, branch: Option<&str>) -> Result<EditReport> {
+    let ws = require(ctx)?;
+    if !ws.manifest.skills.contains_key(name) {
+        bail!("`{name}` is not a skill in source repo {}; bring it in first with `tricks vendor` or `tricks create`", ws.name);
+    }
+    // An explicit branch; else the experiment already under way; else draft/<skill>.
+    let b = match branch {
+        Some(b) => b.to_string(),
+        None => ctx.state.meta_get(&editing_key(&ws, name))?.filter(|b| !b.is_empty()).unwrap_or_else(|| draft_branch(name)),
     };
-    let rel = ws.skill(&name)?.path.clone();
-    let (path, worktree) = match branch {
-        None => (ws.root.join(&rel), None),
-        Some(b) => {
-            let wt = worktree_path(ctx, &ws, b);
-            if !wt.join(".git").exists() {
-                std::fs::create_dir_all(wt.parent().unwrap())?;
-                let exists = git::git_ok(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]);
-                if exists {
-                    git(&ws.root, &["worktree", "add", "-q", &wt.to_string_lossy(), b])?;
-                } else {
-                    git(&ws.root, &["worktree", "add", "-q", "-b", b, &wt.to_string_lossy(), "HEAD"])?;
-                }
-            }
-            if !wt.join(&rel).exists() {
-                bail!("branch `{b}` has no {rel} (commit the skill on your main branch first)");
-            }
-            (wt.join(&rel), Some(wt))
+    let rel = ws.skill(name)?.path.clone();
+    ensure_ignored(&ws.root)?;
+    let wt = worktree_path(ctx, &ws, &b);
+    if !wt.join(".git").exists() {
+        std::fs::create_dir_all(wt.parent().unwrap())?;
+        let exists = git::git_ok(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]);
+        if exists {
+            git(&ws.root, &["worktree", "add", "-q", &wt.to_string_lossy(), &b])?;
+        } else {
+            git(&ws.root, &["worktree", "add", "-q", "-b", &b, &wt.to_string_lossy(), "HEAD"])?;
         }
-    };
-    ctx.state.meta_set(&editing_key(&ws, &name), branch.unwrap_or(""))?;
-    let placements = redeploy(ctx, &ws, &name)?;
+    }
+    if !wt.join(&rel).exists() {
+        bail!("branch `{b}` has no {rel} (commit the skill on your main branch first)");
+    }
+    ctx.state.meta_set(&editing_key(&ws, name), &b)?;
+    let placements = redeploy(ctx, &ws, name)?;
     Ok(EditReport {
-        name,
-        branch: branch.map(String::from),
-        path: path.to_string_lossy().to_string(),
-        worktree: worktree.map(|w| w.to_string_lossy().to_string()),
+        name: name.to_string(),
+        branch: Some(b),
+        path: wt.join(&rel).to_string_lossy().to_string(),
+        worktree: Some(wt.to_string_lossy().to_string()),
         placements,
-        vendored,
     })
 }
 
@@ -1227,7 +1235,6 @@ pub fn edit_done(ctx: &Ctx, name: &str) -> Result<EditReport> {
         worktree: branch.as_ref().map(|_| dir.to_string_lossy().to_string()),
         branch,
         placements,
-        vendored: false,
     })
 }
 
@@ -1272,15 +1279,16 @@ pub struct CommitReport {
     pub agent: Option<String>,
 }
 
-/// `tricks edit <skill> --commit -m`: commit the draft on the branch being edited.
-/// Refused on the main checkout, so agents (pre-approved for `edit`) only ever commit to
-/// experiment branches.
+/// `tricks edit <skill> --commit -m`: commit the draft on its experiment branch (agents,
+/// pre-approved for `edit`, thus only ever commit to experiment branches).
 pub fn commit_draft(ctx: &Ctx, name: &str, message: &str) -> Result<CommitReport> {
     let ws = require(ctx)?;
     let rel = ws.skill(name)?.path.clone();
-    let branch = ctx.state.meta_get(&editing_key(&ws, name))?.filter(|b| !b.is_empty()).with_context(|| {
-        format!("`{name}` is not being edited on a branch; `--commit` only commits drafts on branches (start one with `tricks edit {name} -b <branch>`), so commit on your main branch with git")
-    })?;
+    let branch = ctx
+        .state
+        .meta_get(&editing_key(&ws, name))?
+        .filter(|b| !b.is_empty())
+        .with_context(|| format!("`{name}` is not being edited; start an experiment with `tricks edit {name}`"))?;
     let dir = worktree_path(ctx, &ws, &branch);
     git(&dir, &["add", "-A", "--", &rel])?;
     let staged = !git::git_ok(&dir, &["diff", "--cached", "--quiet", "--", &rel]);
@@ -1608,12 +1616,7 @@ pub fn status(ctx: &Ctx, ws: &SourceRepo) -> Result<RepoStatus> {
             lint_warnings: warns,
             branches: skill_branches,
             variant: active_variant(ws, name).ok().flatten(),
-            editing: ctx
-                .state
-                .meta_get(&editing_key(ws, name))
-                .ok()
-                .flatten()
-                .map(|b| if b.is_empty() { "main checkout".into() } else { b }),
+            editing: ctx.state.meta_get(&editing_key(ws, name)).ok().flatten().filter(|b| !b.is_empty()),
             merge_in_progress: merge_state(ctx, ws, name).ok().flatten().is_some(),
             dev_links: ctx.state.placements("WHERE skill=?1", &[&ws.skill_key(name)]).map(|v| v.len()).unwrap_or(0),
             uncommitted: dirty,

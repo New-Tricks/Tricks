@@ -172,7 +172,7 @@ fn clawhub_native_skill_search_try_vendor_merge_and_hash_verification() {
     assert!(read(&tried.join("SKILL.md")).contains("v1"));
     assert!(tried.join("references/fields.md").is_file());
     assert!(!tried.join("_meta.json").exists(), "registry bookkeeping must be stripped");
-    s.ok_in(&proj, &["unlink", "invoice"]);
+    s.ok_in(&proj, &["untry", "invoice"]);
 
     // Vendor it into a source repo and customize it.
     let ws = s.project("my-skills");

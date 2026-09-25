@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- The Links view shows this source repo's links and all trials separately; items unlink or untry as appropriate, and **Remove All Trials** joins **Unlink This Source Repo's Skills**.
+- **Experiment on a Branch…** (was *Edit on Branch…*) suggests `draft/<skill>`; drafts are checked out inside the repo in `.tricks/work/`.
+
 ## 0.4.0
 
 - **Create Skill…** (new, or from a folder) replaces *New Skill…*; **Remove Skill…** takes a skill out of the source repo.

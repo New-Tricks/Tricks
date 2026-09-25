@@ -66,20 +66,27 @@ fn try_links_an_upstream_skill_into_the_current_project() {
     s.ok_in(&proj, &["try", "acme/skills//other", "--agents", "copilot"]);
     let cp = proj.join(".github/skills/other");
     assert!(!is_link(&cp) && cp.join("SKILL.md").exists());
-    // List and info report the trial.
-    let st = s.json(&["list"]);
-    let links = st["links"].as_array().unwrap();
-    assert_eq!(links.len(), 3, "{st}");
-    assert!(links.iter().all(|l| l["kind"] == "trial" && l["health"] == "ok"), "{st}");
+    // Trials are listed where they are: this project (and user level) by default.
+    let st = s.json_in(&proj, &["list", "--trials"]);
+    let trials = st["trials"].as_array().unwrap();
+    assert_eq!(trials.len(), 3, "{st}");
+    assert!(trials.iter().all(|l| l["kind"] == "trial" && l["health"] == "ok"), "{st}");
+    assert!(s.json(&["list", "--trials"])["trials"].as_array().unwrap().is_empty(), "not tried outside the project");
+    assert_eq!(s.json(&["list", "--trials", "--all"])["trials"].as_array().unwrap().len(), 3);
+    let human = s.ok_in(&proj, &["list", "--trials"]);
+    assert!(human.contains(proj.to_str().unwrap()) && human.contains("acme/skills//skills/hello"), "{human}");
     assert_eq!(s.json(&["info", "acme/skills//hello"])["linked"], true);
-    // Unlinking removes the placements and prunes the store.
+    // Trials are removed with untry (unlink points there), which prunes the store.
+    let err = s.fail_in(&proj, &["unlink", "hello"]);
+    assert!(err.contains("tricks untry hello"), "{err}");
     let store = s.data.join("store");
     let before = std::fs::read_dir(&store).unwrap().count();
-    s.ok_in(&proj, &["unlink", "hello"]);
+    s.ok_in(&proj, &["untry", "hello"]);
     assert!(std::fs::symlink_metadata(&claude).is_err());
-    assert!(std::fs::read_dir(&store).unwrap().count() < before, "unlink prunes unreferenced store entries");
-    s.ok(&["unlink", "--all"]);
-    assert!(s.json(&["list"])["links"].as_array().unwrap().is_empty());
+    assert!(std::fs::read_dir(&store).unwrap().count() < before, "untry prunes unreferenced store entries");
+    // With no skill, untry clears this project's trials.
+    s.ok_in(&proj, &["untry"]);
+    assert!(s.json(&["list", "--trials", "--all"])["trials"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -98,9 +105,18 @@ fn repo_skills_link_globally_in_dev_mode_and_unlink_together() {
     std::fs::write(ws.join("skills/greeter/SKILL.md"), "---\nname: greeter\ndescription: Greets. Use when greeting.\n---\nlive edit\n")
         .unwrap();
     assert!(std::fs::read_to_string(deployed.join("SKILL.md")).unwrap().contains("live edit"));
-    let st = s.json_in(&ws, &["list"]);
+    let st = s.json_in(&ws, &["list", "--links"]);
     assert_eq!(st["source_repo"]["skills"].as_array().unwrap().len(), 2);
     assert!(st["links"].as_array().unwrap().iter().all(|l| l["kind"] == "dev"));
+    assert!(s.ok_in(&ws, &["list"]).contains("linked: user level"));
+    // Outside a source repo, the links of all source repos need --all.
+    let err = s.fail(&["list", "--links"]);
+    assert!(err.contains("--all"), "{err}");
+    assert_eq!(s.json(&["list", "--links", "--all"])["links"].as_array().unwrap().len(), 4);
+    let err = s.fail(&["unlink"]);
+    assert!(err.contains("--all"), "{err}");
+    let err = s.fail_in(&ws, &["untry", "greeter"]);
+    assert!(err.contains("tricks unlink greeter"), "{err}");
     assert_eq!(s.ok_in(&ws, &["statusline"]).trim(), "tricks: 4 links");
     // One skill into a project instead.
     let proj = s.project("app");
@@ -137,7 +153,7 @@ fn link_into_project_keeps_git_clean_and_shadow_restores() {
     assert!(!st.contains(".agents"), "untracked placement leaked into git status: {st}");
     let exclude = std::fs::read_to_string(proj.join(".git/info/exclude")).unwrap();
     assert!(exclude.contains("/.agents/skills/hello"));
-    s.ok(&["unlink", "--all"]);
+    s.ok(&["untry", "--all"]);
     assert_eq!(std::fs::read_to_string(proj.join(".claude/skills/hello/SKILL.md")).unwrap(), "original\n");
     assert!(git(&proj, &["status", "--porcelain"]).is_empty());
     let exclude = std::fs::read_to_string(proj.join(".git/info/exclude")).unwrap();
@@ -156,10 +172,10 @@ fn link_untracked_project_placement_is_invisible_to_git() {
     git(&proj, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "wt"]);
     s.ok(&["try", "acme/skills//hello", "--to", wt.to_str().unwrap(), "--agents", "claude"]);
     assert!(git(&wt, &["status", "--porcelain"]).is_empty());
-    s.ok(&["unlink", "hello", "--to", wt.to_str().unwrap()]);
+    s.ok(&["untry", "hello", "--to", wt.to_str().unwrap()]);
     // Main checkout still excluded because its placement remains.
     assert!(git(&proj, &["status", "--porcelain"]).is_empty());
-    s.ok(&["unlink", "--all"]);
+    s.ok(&["untry", "--all"]);
 }
 
 #[test]

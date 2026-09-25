@@ -1,6 +1,6 @@
 [package]
 name = "newtricks"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "New Tricks: teach your agents new tricks. The design-time workbench for agent skills: federated search, customization with upstream merges, branch experiments, lint and publish."
 license = "Apache-2.0"
@@ -37,7 +37,6 @@ similar = "3.2.0"
 spdx = { version = "0.13.5", features = ["detection-inline-cache"] }
 tar = "0.4.46"
 tempfile = "3.27.0"
-termimad = "0.35.5"
 thiserror = "2.0.21"
 time = { version = "0.3.55", features = ["formatting", "parsing", "macros"] }
 toml = "1.1.6"

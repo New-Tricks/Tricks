@@ -351,10 +351,23 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
 }
 
 /// Find the source repo root (directory containing `tricks.toml`) from `start` upward.
+/// Where branch experiments are checked out, inside the source repo (git-ignored).
+pub const WORK_DIR: &str = ".tricks/work";
+
+/// The source repo containing `start`. Inside an experiment worktree
+/// (`<repo>/.tricks/work/<branch>/…`, itself a checkout with a `tricks.toml`) this is
+/// the repo the worktree belongs to.
 pub fn find_source_repo(start: &Path) -> Option<PathBuf> {
     let mut cur = Some(start);
     while let Some(d) = cur {
         if d.join(REPO_MANIFEST).is_file() {
+            if let Some(work) = d.parent()
+                && work.ends_with(WORK_DIR)
+                && let Some(repo) = work.parent().and_then(Path::parent)
+                && repo.join(REPO_MANIFEST).is_file()
+            {
+                return Some(repo.to_path_buf());
+            }
             return Some(d.to_path_buf());
         }
         cur = d.parent();

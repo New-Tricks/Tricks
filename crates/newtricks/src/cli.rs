@@ -136,15 +136,12 @@ pub enum Cmd {
         /// Skill id, URL, or name
         skill: String,
     },
-    /// Show a skill's content (Markdown is rendered in a terminal)
+    /// Print a skill's SKILL.md (or a supporting file), fetched without cloning; pipe it to render
     View {
         /// Skill id, URL, or name
         skill: String,
         /// A supporting file instead of SKILL.md
         file: Option<String>,
-        /// Print the file as is
-        #[arg(long)]
-        raw: bool,
     },
     /// Manage the catalogs search draws on
     #[command(subcommand)]
@@ -155,6 +152,20 @@ pub enum Cmd {
         skill: String,
         #[command(flatten)]
         link: LinkArgs,
+    },
+    /// Remove trials: a skill's, or those in this project (`--global`, `--to`, `--all`)
+    Untry {
+        /// Skill being tried (default: every trial in this project)
+        skill: Option<String>,
+        /// Only trials in this project
+        #[arg(long)]
+        to: Option<String>,
+        /// Only trials in the user-level agent directories
+        #[arg(long)]
+        global: bool,
+        /// Every trial, everywhere
+        #[arg(long)]
+        all: bool,
     },
 
     // ------------------------------------------------------------ skills in the repo
@@ -202,20 +213,29 @@ pub enum Cmd {
     },
     /// Source repo skills and their state (outside a repo: registered source repos)
     List {
-        /// Show links and trials instead
-        #[arg(long)]
+        /// This source repo's links instead (`--all`: every source repo's)
+        #[arg(long, conflicts_with = "trials")]
         links: bool,
+        /// Trials in this project and at user level instead (`--all`: everywhere)
+        #[arg(long)]
+        trials: bool,
+        /// With --links or --trials: not only this source repo's / this project's
+        #[arg(long)]
+        all: bool,
     },
 
     // ------------------------------------------------------------ work on skills
-    /// Edit a skill (optionally on a branch); its links follow the edits live
+    /// Experiment with a skill on a branch, in .tricks/work/<branch>; its links follow the draft
     Edit {
-        /// Source repo skill (an upstream skill is vendored first)
+        /// Source repo skill
         skill: String,
-        /// Edit on this branch, in its own worktree (created if needed)
+        /// Branch to experiment on (default: draft/<skill>)
         #[arg(long, short = 'b', conflicts_with_all = ["commit", "done"])]
         branch: Option<String>,
-        /// Commit the draft on the branch being edited (never on the main checkout)
+        /// Open a shell in the draft (`exit` returns); or `cd "$(tricks edit <skill>)"`
+        #[arg(long, conflicts_with_all = ["commit", "done"])]
+        shell: bool,
+        /// Commit the draft on its branch
         #[arg(long, requires = "message")]
         commit: bool,
         /// Commit message (with --commit)
@@ -308,9 +328,9 @@ pub enum Cmd {
         #[command(flatten)]
         link: LinkArgs,
     },
-    /// Remove links and trials (all of the source repo's when none is named)
+    /// Remove links of source repo skills (all of this repo's when none is named)
     Unlink {
-        /// Skill to unlink
+        /// Source repo skill
         skill: Option<String>,
         /// Only links in this project
         #[arg(long)]
@@ -318,7 +338,7 @@ pub enum Cmd {
         /// Only links in the user-level agent directories
         #[arg(long)]
         global: bool,
-        /// Every link and trial, everywhere
+        /// Every source repo's links (needed outside a source repo)
         #[arg(long)]
         all: bool,
     },
@@ -388,7 +408,7 @@ pub enum Cmd {
 
 /// Top-level help, grouped by what you are doing.
 const GROUPS: &[(&str, &[&str])] = &[
-    ("Discover", &["search", "info", "view", "catalog", "try"]),
+    ("Discover", &["search", "info", "view", "catalog", "try", "untry"]),
     ("Skills in the source repo", &["init", "create", "vendor", "remove", "list"]),
     ("Work on skills", &["edit", "use", "diff", "merge"]),
     ("Upstream", &["outdated", "sync", "contribute"]),
@@ -461,7 +481,7 @@ fn run(cli: Cli) -> Result<()> {
             let r = crate::inspect::info(&ctx, &skill)?;
             emit(json, &r, print_info);
         }
-        Cmd::View { skill, file, raw } => view(&ctx, &skill, file.as_deref(), raw)?,
+        Cmd::View { skill, file } => view(&ctx, &skill, file.as_deref())?,
         Cmd::Catalog(sc) => run_catalog(&ctx, sc)?,
         Cmd::Try { skill, link } => {
             let r = crate::links::try_skill(&ctx, &skill, &link.options())?;
@@ -470,6 +490,18 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Link { skill, link } => {
             let r = crate::links::link(&ctx, skill.as_deref(), &link.options())?;
             emit(json, &r, print_links);
+        }
+        Cmd::Untry { skill, to, global, all } => {
+            let o = crate::links::UnlinkOptions { to: to.as_deref(), global, all };
+            let r = crate::links::untry(&ctx, skill.as_deref(), &o)?;
+            emit(json, &r, |r| {
+                for p in &r.removed {
+                    println!("removed {p}");
+                }
+                if r.removed.is_empty() {
+                    println!("no trials to remove here (`--global`, `--to <dir>` or `--all` for others)");
+                }
+            });
         }
         Cmd::Unlink { skill, to, global, all } => {
             let o = crate::links::UnlinkOptions { to: to.as_deref(), global, all };
@@ -483,9 +515,12 @@ fn run(cli: Cli) -> Result<()> {
                 }
             });
         }
-        Cmd::List { links } => {
-            let r = crate::cli_repo::list(&ctx)?;
-            emit(json, &r, |r| crate::cli_repo::print_list(r, links));
+        Cmd::List { links, trials, all } => {
+            if links && !all && crate::source_repo::current(&ctx)?.is_none() {
+                anyhow::bail!("not inside a source repo: pass --all to list the links of all your source repos");
+            }
+            let r = crate::cli_repo::list(&ctx, all)?;
+            emit(json, &r, |r| crate::cli_repo::print_list(r, links, trials));
         }
         Cmd::Statusline => {
             let line = crate::statusline::line(&ctx)?;
@@ -526,34 +561,23 @@ fn print_links(r: &crate::links::LinkReport) {
     for (n, e) in &r.errors {
         println!("failed {n}: {e}");
     }
+    match r.links.as_slice() {
+        [] => {}
+        [l] if l.trial => println!("see trials with `tricks list --trials`; remove with `tricks untry {}`", l.name),
+        [l] => println!("see links with `tricks list --links`; remove with `tricks unlink {}`", l.name),
+        _ => println!("see links with `tricks list --links`; remove them with `tricks unlink`"),
+    }
 }
 
-/// `tricks view`: Markdown is rendered for a terminal, printed as is otherwise.
-fn view(ctx: &Ctx, skill: &str, file: Option<&str>, raw: bool) -> Result<()> {
+/// `tricks view`: the file as is (pipe it to a Markdown renderer such as `glow -`).
+fn view(ctx: &Ctx, skill: &str, file: Option<&str>) -> Result<()> {
     let path = file.unwrap_or("SKILL.md");
     let (canonical, bytes) = crate::inspect::read_file(ctx, skill, path)?;
-    let text = String::from_utf8_lossy(&bytes);
     if ctx.opts.json {
-        println!("{}", serde_json::json!({ "skill": canonical, "path": path, "content": text }));
-        return Ok(());
-    }
-    use std::io::IsTerminal;
-    let markdown = path.ends_with(".md") || path.ends_with(".markdown");
-    if raw || !markdown || !std::io::stdout().is_terminal() {
-        print!("{text}");
-        return Ok(());
-    }
-    let skin = termimad::MadSkin::default();
-    if path == "SKILL.md" {
-        let doc = crate::skill::SkillDoc::parse(&text);
-        println!("{}  {canonical}", doc.name.as_deref().unwrap_or(skill));
-        if let Some(d) = &doc.description {
-            skin.print_text(&format!("*{}*", d.trim()));
-        }
-        println!();
-        skin.print_text(&doc.body);
+        println!("{}", serde_json::json!({ "skill": canonical, "path": path, "content": String::from_utf8_lossy(&bytes) }));
     } else {
-        skin.print_text(&text);
+        use std::io::Write;
+        std::io::stdout().write_all(&bytes)?;
     }
     Ok(())
 }

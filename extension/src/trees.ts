@@ -110,7 +110,7 @@ export class LinksTree implements vscode.TreeDataProvider<SkillItem> {
   }
 
   getChildren(e?: SkillItem): SkillItem[] {
-    const links = this.model.status?.links ?? [];
+    const links = [...(this.model.status?.links ?? []), ...(this.model.status?.trials ?? [])];
     if (!e) {
       const groups: SkillItem[] = [];
       for (const [kind, label, icon] of [
@@ -121,7 +121,7 @@ export class LinksTree implements vscode.TreeDataProvider<SkillItem> {
         if (!n) continue;
         const g = new SkillItem(kind, `${label} (${n})`, vscode.TreeItemCollapsibleState.Expanded, "detail");
         g.iconPath = new vscode.ThemeIcon(icon);
-        g.contextValue = "linkGroup";
+        g.contextValue = kind === "dev" ? "linkGroup" : "trialGroup";
         groups.push(g);
       }
       return groups;
@@ -142,7 +142,7 @@ function linkItem(l: LinkInfo): SkillItem {
   it.description = `${scope} · ${l.mode}${l.health !== "ok" ? ` · ${l.health}` : ""}`;
   it.tooltip = `${l.path}\n${l.skill}`;
   it.iconPath = new vscode.ThemeIcon(l.health === "ok" ? "pass" : "warning");
-  it.contextValue = "link";
+  it.contextValue = l.kind === "trial" ? "trial" : "link";
   it.resourceUri = vscode.Uri.file(l.path);
   return it;
 }

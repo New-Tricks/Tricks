@@ -90,7 +90,7 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Cmd::Edit { skill, branch, commit, message, done } => {
+        Cmd::Edit { skill, branch, shell, commit, message, done } => {
             if commit {
                 let r = source_repo::commit_draft(ctx, &skill, message.as_deref().unwrap_or_default())?;
                 emit(json, &r, |r| match &r.commit {
@@ -109,22 +109,22 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
             }
             let r = if done { source_repo::edit_done(ctx, &skill)? } else { source_repo::edit(ctx, &skill, branch.as_deref())? };
             emit(json, &r, |r| {
-                if r.vendored {
-                    println!("vendored {} into the source repo", r.name);
-                }
                 println!("{}", r.path);
                 if done {
                     eprintln!("finished editing `{}`; links deploy its active variant", r.name);
                 } else if let Some(b) = &r.branch {
                     eprintln!(
-                        "editing `{}` on branch {b}; commit drafts with `tricks edit {} --commit -m \"…\"`, then `tricks merge {}@{b}`",
-                        r.name, r.name, r.name
+                        "editing `{}` on branch {b} (`cd \"$(tricks edit {})\"` or `--shell` to work there); commit drafts with `tricks edit {} --commit -m \"…\"`, then `tricks merge {}@{b}`",
+                        r.name, r.name, r.name, r.name
                     );
                 }
                 for p in &r.placements {
                     eprintln!("  → {p}");
                 }
             });
+            if shell {
+                open_shell(&r.path, &format!("{}@{}", r.name, r.branch.as_deref().unwrap_or_default()))?;
+            }
         }
         Cmd::Use { spec, local, reset } => {
             let r = source_repo::use_variant(ctx, &spec, local, reset)?;
@@ -233,6 +233,21 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
     Ok(())
 }
 
+/// `edit --shell`: an interactive shell in the draft; `exit` returns.
+fn open_shell(dir: &str, what: &str) -> Result<()> {
+    let shell = if cfg!(windows) {
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
+    } else {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+    };
+    eprintln!("starting {shell} in {dir} (`exit` to return)");
+    let status = std::process::Command::new(&shell).current_dir(dir).env("TRICKS_EDITING", what).status()?;
+    if !status.success() {
+        eprintln!("shell exited with {status}");
+    }
+    Ok(())
+}
+
 /// `a..b`, `a..` (to working), `..b` (from head), `a` (a..working); default head..working.
 fn parse_range(range: Option<&str>) -> Result<(String, String)> {
     let (a, b) = match range {
@@ -296,38 +311,68 @@ pub struct List {
     pub source_repo: Option<RepoStatus>,
     /// Registered source repos (from the user config).
     pub repos: Vec<RepoSummary>,
+    /// Links of this source repo's skills (every source repo's with `--all`).
     pub links: Vec<crate::links::LinkInfo>,
+    /// Trials in this project and at user level (everywhere with `--all`).
+    pub trials: Vec<crate::links::LinkInfo>,
     pub unfinished_operations: Vec<String>,
 }
 
-pub fn list(ctx: &Ctx) -> Result<List> {
-    let source_repo = source_repo::current(ctx)?.map(|w| source_repo::status(ctx, &w)).transpose()?;
+pub fn list(ctx: &Ctx, all: bool) -> Result<List> {
+    let ws = source_repo::current(ctx)?;
+    let links = match (&ws, all) {
+        (_, true) => crate::links::dev_links(ctx, None)?,
+        (Some(w), false) => crate::links::dev_links(ctx, Some(w))?,
+        (None, false) => vec![],
+    };
     Ok(List {
-        source_repo,
+        source_repo: ws.as_ref().map(|w| source_repo::status(ctx, w)).transpose()?,
         repos: source_repo::all_source_repos(ctx)?
             .into_iter()
             .map(|w| RepoSummary { name: w.name.clone(), root: w.root.to_string_lossy().to_string(), skills: w.manifest.skills.len() })
             .collect(),
-        links: crate::links::list(ctx)?,
+        links,
+        trials: crate::links::trials(ctx, all)?,
         unfinished_operations: ctx.state.unfinished_ops()?.into_iter().map(|(_, op, d)| format!("{op} {d}")).collect(),
     })
 }
 
-pub fn print_list(s: &List, links: bool) {
+fn place_label(scope: &str) -> String {
+    if scope == "global" { "user level".into() } else { scope.to_string() }
+}
+
+/// Links grouped by where they are: user level first, then each project.
+fn print_grouped(items: &[crate::links::LinkInfo], dev: bool) {
+    let mut scopes: Vec<&str> = items.iter().map(|l| l.scope.as_str()).collect();
+    scopes.sort_by_key(|s| (*s != "global", s.to_string()));
+    scopes.dedup();
+    for scope in scopes {
+        println!("{}:", place_label(scope));
+        for l in items.iter().filter(|l| l.scope == scope) {
+            let h = if l.health == "ok" { String::new() } else { format!("  !! {}", l.health) };
+            let what = if dev { l.name.clone() } else { l.skill.strip_prefix("github.com/").unwrap_or(&l.skill).to_string() };
+            println!("  {what:<28} {:<8} {} ({}){h}", l.agent, l.path, l.mode);
+        }
+    }
+}
+
+pub fn print_list(s: &List, links: bool, trials: bool) {
     if links {
         if s.links.is_empty() {
-            println!("no links; `tricks link` links your source repo's skills, `tricks try <skill>` tries one from elsewhere");
+            println!("no links; `tricks link` links this source repo's skills for your agents");
         }
-        for l in &s.links {
-            let h = if l.health == "ok" { String::new() } else { format!("  !! {}", l.health) };
-            let skill = l.skill.strip_prefix("github.com/").unwrap_or(&l.skill);
-            let skill = skill.rsplit_once("//").filter(|_| skill.starts_with("ws:")).map(|(_, n)| n).unwrap_or(skill);
-            println!("{:<6} {:<8} {} → {} ({}){}", l.kind, l.agent, l.path, skill, l.mode, h);
+        print_grouped(&s.links, true);
+        return;
+    }
+    if trials {
+        if s.trials.is_empty() {
+            println!("no trials here; `tricks try <skill>` tries a skill from elsewhere (`--all` lists every project's)");
         }
+        print_grouped(&s.trials, false);
         return;
     }
     match &s.source_repo {
-        Some(w) => print_repo_status(w),
+        Some(w) => print_repo_status(w, &s.links),
         None if s.repos.is_empty() => println!("no source repos yet; run `tricks init` in a git repository"),
         None => {
             println!("source repos:");
@@ -336,9 +381,8 @@ pub fn print_list(s: &List, links: bool) {
             }
         }
     }
-    let trials = s.links.iter().filter(|l| l.kind == "trial").count();
-    if trials > 0 {
-        println!("{trials} trial link(s); see `tricks list --links`");
+    if !s.trials.is_empty() {
+        println!("{} trial(s) here; see `tricks list --trials`", s.trials.len());
     }
     for u in &s.unfinished_operations {
         println!("interrupted operation: {u} (re-run the command to recover)");
@@ -415,7 +459,7 @@ fn print_outdated(r: &SyncReport) {
     }
 }
 
-pub fn print_repo_status(w: &RepoStatus) {
+pub fn print_repo_status(w: &RepoStatus, links: &[crate::links::LinkInfo]) {
     println!("source repo {} ({}{})", w.name, w.root, w.branch.as_deref().map(|b| format!(", branch {b}")).unwrap_or_default());
     for s in &w.skills {
         let mut notes = Vec::new();
@@ -447,8 +491,12 @@ pub fn print_repo_status(w: &RepoStatus) {
         if !s.branches.is_empty() {
             notes.push(format!("branches: {}", s.branches.join(", ")));
         }
-        if s.dev_links > 0 {
-            notes.push(format!("{} link(s)", s.dev_links));
+        let key = format!("ws:{}//{}", w.root, s.name);
+        let mut places: Vec<String> = links.iter().filter(|l| l.skill == key).map(|l| place_label(&l.scope)).collect();
+        places.sort();
+        places.dedup();
+        if !places.is_empty() {
+            notes.push(format!("linked: {}", places.join(", ")));
         }
         println!("  {:<22} {}", s.name, notes.join(" · "));
     }

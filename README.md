@@ -25,9 +25,10 @@ The VS Code extension (also Cursor, Windsurf, VSCodium) lives in [`extension/`](
 # Discover prior art: one search over skill repos, marketplaces, skills.sh, Tessl, ClawHub and GitHub
 tricks search pdf forms --license allow --no-scripts
 tricks info anthropics/skills//skill-creator          # licence, risk, catalog signals, frontmatter, files
-tricks view anthropics/skills//skill-creator          # the content, rendered
+tricks view anthropics/skills//skill-creator | glow - # the content (pipe it to render)
 tricks try anthropics/skills//webapp-testing          # try it in this project (git status stays clean)
-tricks unlink webapp-testing
+tricks list --trials                                  # trials here (--all: everywhere)
+tricks untry webapp-testing
 
 # Start a source repo: any git repository
 cd ~/code/my-skills && tricks init [--agent-skill]    # --agent-skill: teach this repo's agents New Tricks
@@ -40,10 +41,12 @@ tricks list                                           # skills, variants, upstre
 # Try your skills with real agents
 tricks link                                           # every skill, user-level agent dirs, dev mode: edits are live
 tricks link changelog-writer --to ~/code/my-app       # or one skill into one project
-tricks list --links
+tricks list --links                                   # this repo's links (--all: every source repo's)
+tricks unlink                                         # remove them
 
 # Experiment on a branch
-tricks edit changelog-writer -b terse                 # worktree; linked agents load the draft
+tricks edit changelog-writer -b terse --shell         # draft in .tricks/work/terse; linked agents load it
+cd "$(tricks edit changelog-writer)"                  # ...or cd there (default branch: draft/<skill>)
 tricks edit changelog-writer --commit -m "Terser output"
 tricks diff changelog-writer head..terse
 tricks use changelog-writer@terse [--local]           # pick the variant links deploy
