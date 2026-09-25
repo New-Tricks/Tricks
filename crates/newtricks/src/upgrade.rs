@@ -1,4 +1,4 @@
-//! `tricks self-update` for standalone installs (spec §16). Homebrew and
+//! `tricks upgrade` for standalone installs (spec §16). Homebrew and
 //! VS Code-bundled binaries are updated by their package managers.
 
 use crate::ctx::Ctx;
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub const RELEASE_REPO: &str = "new-tricks/tricks";
 
 #[derive(Debug, Serialize)]
-pub struct SelfUpdateReport {
+pub struct UpgradeReport {
     pub current: String,
     pub latest: Option<String>,
     pub updated: bool,
@@ -40,22 +40,22 @@ pub fn target_triple() -> &'static str {
     }
 }
 
-pub fn run(ctx: &Ctx, check_only: bool) -> Result<SelfUpdateReport> {
+pub fn run(ctx: &Ctx, check_only: bool) -> Result<UpgradeReport> {
     let current = env!("CARGO_PKG_VERSION").to_string();
     let exe = std::env::current_exe()?;
     let exe_s = exe.to_string_lossy();
     if exe_s.contains("/Cellar/") || exe_s.contains("/homebrew/") || exe_s.contains("/linuxbrew/") {
-        return Ok(SelfUpdateReport {
+        return Ok(UpgradeReport {
             current,
             latest: None,
             updated: false,
-            message: "installed with Homebrew: run `brew upgrade tricks`".into(),
+            message: "installed with Homebrew: run `brew upgrade newtricks`".into(),
         });
     }
     let in_extension = (exe_s.contains("/extensions/") || exe_s.contains("\\extensions\\"))
         && (exe_s.contains("new-tricks") || exe_s.contains("newtricks"));
     if in_extension {
-        return Ok(SelfUpdateReport {
+        return Ok(UpgradeReport {
             current,
             latest: None,
             updated: false,
@@ -70,7 +70,7 @@ pub fn run(ctx: &Ctx, check_only: bool) -> Result<SelfUpdateReport> {
         _ => latest != current,
     };
     if !newer {
-        return Ok(SelfUpdateReport {
+        return Ok(UpgradeReport {
             current: current.clone(),
             latest: Some(latest),
             updated: false,
@@ -78,7 +78,7 @@ pub fn run(ctx: &Ctx, check_only: bool) -> Result<SelfUpdateReport> {
         });
     }
     if check_only {
-        return Ok(SelfUpdateReport {
+        return Ok(UpgradeReport {
             current: current.clone(),
             latest: Some(latest.clone()),
             updated: false,
@@ -111,7 +111,7 @@ pub fn run(ctx: &Ctx, check_only: bool) -> Result<SelfUpdateReport> {
         .arg("-C")
         .arg(tmp.path())
         .status()
-        .context("tar is required for self-update")?;
+        .context("tar is required for upgrade")?;
     if !st.success() {
         bail!("could not extract {asset_name}");
     }
@@ -128,5 +128,5 @@ pub fn run(ctx: &Ctx, check_only: bool) -> Result<SelfUpdateReport> {
     std::fs::rename(&exe, &old)?;
     std::fs::rename(&staged, &exe)?;
     let _ = std::fs::remove_file(&old);
-    Ok(SelfUpdateReport { current, latest: Some(latest.clone()), updated: true, message: format!("updated to New Tricks {latest}") })
+    Ok(UpgradeReport { current, latest: Some(latest.clone()), updated: true, message: format!("updated to New Tricks {latest}") })
 }

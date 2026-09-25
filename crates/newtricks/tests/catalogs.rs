@@ -192,7 +192,7 @@ fn clawhub_native_skill_search_try_vendor_merge_and_hash_verification() {
     assert_eq!(check["items"][0]["state"], "update-available", "{check}");
     assert_eq!(check["items"][0]["to_ref"], "1.1.0");
     assert!(check["items"][0]["incoming"].to_string().contains("M SKILL.md"), "{check}");
-    let m = s.json_in(&ws, &["sync"]);
+    let m = s.json_in(&ws, &["update"]);
     assert_eq!(m["items"][0]["state"], "merged", "{m}");
     let merged = read(&sk);
     assert!(merged.contains("v2") && merged.contains("Notes: mine"), "{merged}");
@@ -201,7 +201,7 @@ fn clawhub_native_skill_search_try_vendor_merge_and_hash_verification() {
 
     // A download that does not match the published hashes is refused; nothing changes.
     hub.publish("acme", "invoice", "1.2.0", &[("SKILL.md", md("v3").as_bytes()), ("references/fields.md", b"fields\n")], true);
-    let bad = s.json_in(&ws, &["sync"]);
+    let bad = s.json_in(&ws, &["update"]);
     assert_eq!(bad["items"][0]["state"], "error", "{bad}");
     assert!(bad["items"][0]["message"].as_str().unwrap().contains("does not match its published SHA-256"), "{bad}");
     assert!(read(&sk).contains("v2"));

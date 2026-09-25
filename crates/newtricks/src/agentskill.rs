@@ -31,6 +31,8 @@ pub fn install(ctx: &Ctx, agents_sel: &[&'static Agent], scope: &Scope) -> Resul
                 commit: None,
                 force_copy: false,
                 shadow: false,
+                pin: None,
+                branch: None,
             },
         )?;
         out.push(p.path);

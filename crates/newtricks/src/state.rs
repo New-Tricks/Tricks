@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS placements(
   id INTEGER PRIMARY KEY,
   skill TEXT NOT NULL, origin TEXT NOT NULL, agent TEXT NOT NULL, scope TEXT NOT NULL,
   path TEXT NOT NULL UNIQUE, mode TEXT NOT NULL, target TEXT NOT NULL,
-  tree TEXT, commit_sha TEXT, shadow_backup TEXT, exclude_file TEXT, exclude_entry TEXT, created_at INTEGER);
+  tree TEXT, commit_sha TEXT, shadow_backup TEXT, exclude_file TEXT, exclude_entry TEXT, created_at INTEGER,
+  pin TEXT, branch TEXT);
 -- Tables of the user-scope installs removed in 0.3.
 DROP TABLE IF EXISTS deployments;
 DROP TABLE IF EXISTS pending_updates;
@@ -69,6 +70,11 @@ pub struct Placement {
     pub exclude_file: Option<String>,
     pub exclude_entry: Option<String>,
     pub created_at: i64,
+    /// The branch a source repo skill's link is pinned to (`link <skill>@<branch>`);
+    /// `None` follows the skill's default (working tree or `use` variant).
+    pub pin: Option<String>,
+    /// The branch the link deploys right now (for display).
+    pub branch: Option<String>,
 }
 
 impl State {
@@ -81,6 +87,12 @@ impl State {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
         // Additive migrations for databases created by earlier versions.
+        for col in ["pin", "branch"] {
+            let has: bool = conn.prepare(&format!("SELECT 1 FROM pragma_table_info('placements') WHERE name='{col}'"))?.exists([])?;
+            if !has {
+                conn.execute_batch(&format!("ALTER TABLE placements ADD COLUMN {col} TEXT"))?;
+            }
+        }
         let has_signals: bool = conn.prepare("SELECT 1 FROM pragma_table_info('listings') WHERE name='signals'")?.exists([])?;
         if !has_signals {
             conn.execute_batch("ALTER TABLE listings ADD COLUMN signals TEXT")?;
@@ -124,16 +136,32 @@ impl State {
 
     pub fn insert_placement(&self, p: &Placement) -> Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO placements(skill, origin, agent, scope, path, mode, target, tree, commit_sha, shadow_backup, exclude_file, exclude_entry, created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-            params![p.skill, p.origin, p.agent, p.scope, p.path, p.mode, p.target, p.tree, p.commit, p.shadow_backup, p.exclude_file, p.exclude_entry, now()],
+            "INSERT OR REPLACE INTO placements(skill, origin, agent, scope, path, mode, target, tree, commit_sha, shadow_backup, exclude_file, exclude_entry, created_at, pin, branch)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            params![
+                p.skill,
+                p.origin,
+                p.agent,
+                p.scope,
+                p.path,
+                p.mode,
+                p.target,
+                p.tree,
+                p.commit,
+                p.shadow_backup,
+                p.exclude_file,
+                p.exclude_entry,
+                now(),
+                p.pin,
+                p.branch
+            ],
         )?;
         Ok(())
     }
 
     pub fn placements(&self, filter: &str, args: &[&dyn rusqlite::ToSql]) -> Result<Vec<Placement>> {
         let sql = format!(
-            "SELECT id, skill, origin, agent, scope, path, mode, target, tree, commit_sha, shadow_backup, exclude_file, exclude_entry, created_at
+            "SELECT id, skill, origin, agent, scope, path, mode, target, tree, commit_sha, shadow_backup, exclude_file, exclude_entry, created_at, pin, branch
              FROM placements {filter} ORDER BY skill, scope, agent"
         );
         let mut st = self.conn.prepare(&sql)?;
@@ -153,6 +181,8 @@ impl State {
                 exclude_file: r.get(11)?,
                 exclude_entry: r.get(12)?,
                 created_at: r.get(13)?,
+                pin: r.get(14)?,
+                branch: r.get(15)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

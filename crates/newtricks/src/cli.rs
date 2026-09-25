@@ -225,7 +225,7 @@ pub enum Cmd {
     },
 
     // ------------------------------------------------------------ work on skills
-    /// Experiment with a skill on a branch, in .tricks/work/<branch>; its links follow the draft
+    /// Experiment with a skill on a branch, in .tricks/work/<branch> (`link <skill>@<branch>` deploys the draft)
     Edit {
         /// Source repo skill
         skill: String,
@@ -241,7 +241,7 @@ pub enum Cmd {
         /// Commit message (with --commit)
         #[arg(long, short = 'm', requires = "commit")]
         message: Option<String>,
-        /// Stop editing: links return to the skill's active variant
+        /// Stop editing: links pinned to the branch deploy its last commit
         #[arg(long)]
         done: bool,
     },
@@ -262,7 +262,7 @@ pub enum Cmd {
         /// Source repo skill
         skill: String,
         /// <from>..<to>: branch or commit names, `head`, `working`, or `base` (the upstream
-        /// revision last synced). Default: head..working
+        /// revision last updated from). Default: head..working
         #[arg(value_name = "RANGE")]
         range: Option<String>,
     },
@@ -292,8 +292,8 @@ pub enum Cmd {
         diff: bool,
     },
     /// Merge upstream changes into vendored skills, keeping yours (left uncommitted)
-    Sync {
-        /// Only this skill (also syncs a pinned skill)
+    Update {
+        /// Only this skill (also updates a pinned skill)
         skill: Option<String>,
         /// Show what the result would be; change nothing
         #[arg(long, conflicts_with_all = ["cont", "abort"])]
@@ -379,8 +379,8 @@ pub enum Cmd {
     // ------------------------------------------------------------ maintain
     /// Check environment, credentials, agents and state
     Doctor,
-    /// Update tricks itself
-    SelfUpdate {
+    /// Upgrade tricks to the latest release
+    Upgrade {
         /// Only check for a newer release
         #[arg(long)]
         check: bool,
@@ -397,7 +397,7 @@ pub enum Cmd {
     /// One-line status for agent status lines (cached state only, never the network)
     #[command(hide = true)]
     Statusline,
-    /// Prune store entries no link or sync needs (runs automatically after unlink)
+    /// Prune store entries no link or update needs (runs automatically after unlink)
     #[command(hide = true)]
     Gc {
         /// Show what would be removed
@@ -411,10 +411,10 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("Discover", &["search", "info", "view", "catalog", "try", "untry"]),
     ("Skills in the source repo", &["init", "create", "vendor", "remove", "list"]),
     ("Work on skills", &["edit", "use", "diff", "merge"]),
-    ("Upstream", &["outdated", "sync", "contribute"]),
+    ("Upstream", &["outdated", "update", "contribute"]),
     ("Validate", &["link", "unlink", "lint"]),
     ("Ship", &["publish"]),
-    ("Maintain", &["doctor", "self-update"]),
+    ("Maintain", &["doctor", "upgrade"]),
 ];
 
 pub fn command() -> clap::Command {
@@ -540,8 +540,8 @@ fn run(cli: Cli) -> Result<()> {
             let r = crate::doctor::run(&ctx)?;
             emit(json, &r, crate::doctor::print);
         }
-        Cmd::SelfUpdate { check } => {
-            let r = crate::selfupdate::run(&ctx, check)?;
+        Cmd::Upgrade { check } => {
+            let r = crate::upgrade::run(&ctx, check)?;
             emit(json, &r, |r| println!("{}", r.message));
         }
         Cmd::Serve { .. } => unreachable!(),
@@ -553,7 +553,12 @@ fn run(cli: Cli) -> Result<()> {
 fn print_links(r: &crate::links::LinkReport) {
     for l in &r.links {
         let into = if l.scope == "global" { "the user-level agent directories".to_string() } else { l.scope.clone() };
-        println!("{} {} into {into}", if l.trial { "trying" } else { "linked" }, l.name);
+        let from = l
+            .source
+            .as_deref()
+            .map(|src| format!(" from {}", crate::links::describe(l.branch.as_deref(), l.pinned, src, l.commit.as_deref())))
+            .unwrap_or_default();
+        println!("{} {} into {into}{from}", if l.trial { "trying" } else { "linked" }, l.name);
         for (a, p, m) in &l.placements {
             println!("  {a:<8} {p} ({m})");
         }

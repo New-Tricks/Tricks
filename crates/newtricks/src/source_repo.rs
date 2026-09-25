@@ -17,7 +17,7 @@ use crate::store;
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize)]
@@ -293,7 +293,7 @@ fn confirm_licence(ctx: &Ctx, what: &str, lic: &config::LicenseRecord) -> Result
 }
 
 /// Bring an upstream skill (git or catalog-hosted) into the source repo to customize it;
-/// the upstream and base are recorded for `sync`.
+/// the upstream and base are recorded for `update`.
 pub fn vendor(ctx: &Ctx, ws: &SourceRepo, input: &str, o: &VendorOptions) -> Result<VendorReport> {
     if !input.contains("//") && local_skill_dir(ctx, input).is_some() {
         bail!(
@@ -419,7 +419,7 @@ pub struct RemoveReport {
 pub fn remove(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<RemoveReport> {
     let rel = ws.skill(name)?.path.clone();
     if merge_state(ctx, ws, name)?.is_some() {
-        bail!("an upstream sync of `{name}` is in progress; finish it with `tricks sync --continue` or `--abort` first");
+        bail!("an upstream update of `{name}` is in progress; finish it with `tricks update --continue` or `--abort` first");
     }
     let dirty = git(&ws.root, &["status", "--porcelain", "--", &rel]).map(|o| !o.trim().is_empty()).unwrap_or(false);
     if dirty && !ctx.confirm(&format!("`{name}` has uncommitted changes that will be lost. Remove it anyway?"), &[])? {
@@ -486,10 +486,10 @@ fn scaffold(ws: &SourceRepo, name: &str, description: Option<&str>) -> Result<Ve
     Ok(VendorReport { name: name.into(), path: rel, upstream: None, base: None, license: None, risk: vec![] })
 }
 
-// ---------------------------------------------------------------- upstream sync
+// ---------------------------------------------------------------- upstream update
 
 #[derive(Debug, Serialize)]
-pub struct SyncItem {
+pub struct UpdateItem {
     pub name: String,
     pub from: Option<String>,
     pub to: Option<String>,
@@ -502,9 +502,9 @@ pub struct SyncItem {
     pub message: Option<String>,
 }
 
-impl SyncItem {
-    fn new(name: &str, state: &str) -> SyncItem {
-        SyncItem {
+impl UpdateItem {
+    fn new(name: &str, state: &str) -> UpdateItem {
+        UpdateItem {
             name: name.into(),
             from: None,
             to: None,
@@ -519,8 +519,8 @@ impl SyncItem {
 }
 
 #[derive(Debug, Serialize, Default)]
-pub struct SyncReport {
-    pub items: Vec<SyncItem>,
+pub struct UpdateReport {
+    pub items: Vec<UpdateItem>,
 }
 
 fn upstream_of(ws: &SourceRepo, name: &str) -> Result<Option<(SkillId, String)>> {
@@ -716,7 +716,7 @@ pub fn source_repo_lock(ctx: &Ctx, ws: &SourceRepo) -> Result<std::fs::File> {
     Ok(f)
 }
 
-pub struct SyncOptions<'a> {
+pub struct UpdateOptions<'a> {
     pub only: Option<&'a str>,
     /// Report what would come in (fetches upstream; changes nothing).
     pub dry_run: bool,
@@ -724,9 +724,9 @@ pub struct SyncOptions<'a> {
     pub abort: bool,
 }
 
-/// `tricks sync`: merge upstream changes into vendored skills (your customizations are
+/// `tricks update`: merge upstream changes into vendored skills (your customizations are
 /// kept), left uncommitted for review.
-pub fn sync(ctx: &Ctx, ws: &SourceRepo, o: &SyncOptions) -> Result<SyncReport> {
+pub fn update(ctx: &Ctx, ws: &SourceRepo, o: &UpdateOptions) -> Result<UpdateReport> {
     if o.dry_run {
         return outdated(ctx, ws, o.only);
     }
@@ -737,16 +737,16 @@ pub fn sync(ctx: &Ctx, ws: &SourceRepo, o: &SyncOptions) -> Result<SyncReport> {
             None => pending_merges(ctx, ws)?,
         };
         if names.is_empty() {
-            bail!("no upstream sync in progress");
+            bail!("no upstream update in progress");
         }
-        let mut rep = SyncReport::default();
+        let mut rep = UpdateReport::default();
         for n in names {
-            rep.items.push(if o.abort { abort_sync(ctx, ws, &n)? } else { continue_sync(ctx, ws, &n)? });
+            rep.items.push(if o.abort { abort_update(ctx, ws, &n)? } else { continue_update(ctx, ws, &n)? });
         }
         return Ok(rep);
     }
     if let Some(p) = pending_merges(ctx, ws)?.first() {
-        bail!("an upstream sync of `{p}` is in progress: resolve conflicts, then `tricks sync --continue` (or `--abort`)");
+        bail!("an upstream update of `{p}` is in progress: resolve conflicts, then `tricks update --continue` (or `--abort`)");
     }
     let names: Vec<String> = match o.only {
         Some(n) => {
@@ -761,9 +761,10 @@ pub fn sync(ctx: &Ctx, ws: &SourceRepo, o: &SyncOptions) -> Result<SyncReport> {
             .map(|(n, _)| n.clone())
             .collect(),
     };
-    let mut rep = SyncReport::default();
+    let mut rep = UpdateReport::default();
     for n in names {
-        let item = sync_one(ctx, ws, &n).unwrap_or_else(|e| SyncItem { message: Some(format!("{e:#}")), ..SyncItem::new(&n, "error") });
+        let item =
+            update_one(ctx, ws, &n).unwrap_or_else(|e| UpdateItem { message: Some(format!("{e:#}")), ..UpdateItem::new(&n, "error") });
         let stop = item.state == "conflicts";
         rep.items.push(item);
         if stop {
@@ -773,9 +774,9 @@ pub fn sync(ctx: &Ctx, ws: &SourceRepo, o: &SyncOptions) -> Result<SyncReport> {
     Ok(rep)
 }
 
-/// `tricks outdated`: what `sync` would bring in, per vendored skill (fetches; changes nothing).
-pub fn outdated(ctx: &Ctx, ws: &SourceRepo, only: Option<&str>) -> Result<SyncReport> {
-    let mut rep = SyncReport::default();
+/// `tricks outdated`: what `update` would bring in, per vendored skill (fetches; changes nothing).
+pub fn outdated(ctx: &Ctx, ws: &SourceRepo, only: Option<&str>) -> Result<UpdateReport> {
+    let mut rep = UpdateReport::default();
     for (name, s) in &ws.manifest.skills {
         if only.is_some_and(|o| o != name) || s.upstream.is_none() || (only.is_none() && s.update == Some(Policy::Paused)) {
             continue;
@@ -783,28 +784,28 @@ pub fn outdated(ctx: &Ctx, ws: &SourceRepo, only: Option<&str>) -> Result<SyncRe
         let item = match sides(ctx, ws, name, Fetch::IfStale) {
             Ok(Some(sd)) => {
                 let changed = !sd.up_to_date();
-                SyncItem {
+                UpdateItem {
                     from: Some(sd.base.clone()),
                     to: Some(sd.up_commit.clone()),
                     to_ref: Some(sd.up_label.clone()),
                     risk: if changed { RiskReport::scan_dir(&sd.up_dir).diff_from(&RiskReport::scan_dir(&sd.base_dir)) } else { vec![] },
                     incoming: if changed { sd.incoming } else { vec![] },
                     message: (s.update == Some(Policy::Pinned) && changed)
-                        .then(|| "pinned: sync it by name to take the update".to_string()),
-                    ..SyncItem::new(name, if changed { "update-available" } else { "up-to-date" })
+                        .then(|| "pinned: name it (`tricks update <skill>`) to take the new version".to_string()),
+                    ..UpdateItem::new(name, if changed { "update-available" } else { "up-to-date" })
                 }
             }
             Ok(None) => continue,
-            Err(e) => SyncItem { message: Some(format!("{e:#}")), ..SyncItem::new(name, "error") },
+            Err(e) => UpdateItem { message: Some(format!("{e:#}")), ..UpdateItem::new(name, "error") },
         };
         rep.items.push(item);
     }
     Ok(rep)
 }
 
-fn sync_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
+fn update_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<UpdateItem> {
     let Some(sd) = sides(ctx, ws, name, Fetch::IfStale)? else {
-        return Ok(SyncItem { message: Some("local original (no upstream)".into()), ..SyncItem::new(name, "skipped") });
+        return Ok(UpdateItem { message: Some("local original (no upstream)".into()), ..UpdateItem::new(name, "skipped") });
     };
     let dir = ws.skill_dir(name)?;
     let rel = ws.skill(name)?.path.clone();
@@ -813,11 +814,11 @@ fn sync_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
         bail!("`{name}` has uncommitted changes; commit or stash them before merging upstream changes");
     }
     if sd.up_to_date() {
-        return Ok(SyncItem {
+        return Ok(UpdateItem {
             from: Some(sd.base.clone()),
             to: Some(sd.up_commit.clone()),
             to_ref: Some(sd.up_label.clone()),
-            ..SyncItem::new(name, "up-to-date")
+            ..UpdateItem::new(name, "up-to-date")
         });
     }
     let risk = RiskReport::scan_dir(&sd.up_dir).diff_from(&RiskReport::scan_dir(&sd.base_dir));
@@ -828,13 +829,13 @@ fn sync_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
     store::copy_dir(&dir, &backup)?;
     let labels = (format!("{name} (yours)"), format!("base {}", crate::id::short_commit(&sd.base)), format!("upstream {}", sd.up_label));
     let outcome = merge::three_way(&sd.base_dir, &dir, &sd.up_dir, (&labels.0, &labels.1, &labels.2))?;
-    let item = SyncItem {
+    let item = UpdateItem {
         from: Some(sd.base.clone()),
         to: Some(sd.up_commit.clone()),
         to_ref: Some(sd.up_label.clone()),
         risk,
         incoming: sd.incoming.clone(),
-        ..SyncItem::new(name, "merged")
+        ..UpdateItem::new(name, "merged")
     };
     if outcome.is_clean() {
         let mut lock = ws.lock.clone();
@@ -849,7 +850,7 @@ fn sync_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
         if let Some(r) = &sd.renamed {
             ctx.ui.info(&format!("upstream moved `{name}` to `{r}`; recorded in tricks.lock"));
         }
-        Ok(SyncItem {
+        Ok(UpdateItem {
             outcome: Some(outcome),
             message: Some(
                 "merged into the working tree (uncommitted); review with `git diff` and commit — agents keep the previous version until then"
@@ -871,10 +872,10 @@ fn sync_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
                 now()
             ],
         )?;
-        Ok(SyncItem {
+        Ok(UpdateItem {
             state: "conflicts".into(),
             outcome: Some(outcome),
-            message: Some("resolve the conflicts, then run `tricks sync --continue` (or `--abort`)".into()),
+            message: Some("resolve the conflicts, then run `tricks update --continue` (or `--abort`)".into()),
             ..item
         })
     }
@@ -917,7 +918,7 @@ pub fn merge_state(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<Option<Merg
         .optional()?)
 }
 
-fn continue_sync(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
+fn continue_update(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<UpdateItem> {
     let st = merge_state(ctx, ws, name)?.with_context(|| format!("no merge in progress for `{name}`"))?;
     let dir = ws.skill_dir(name)?;
     let left = merge::unresolved(&dir, &st.conflicts);
@@ -935,15 +936,15 @@ fn continue_sync(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
     lock.save(&ws.root)?;
     ctx.state.conn.execute("DELETE FROM merges WHERE workspace=?1 AND skill=?2", params![ws.root.to_string_lossy(), name])?;
     let _ = store::remove_dir_force(Path::new(&st.backup));
-    Ok(SyncItem {
+    Ok(UpdateItem {
         from,
         to: Some(st.target_commit),
-        message: Some("sync completed (uncommitted); review and commit".into()),
-        ..SyncItem::new(name, "continued")
+        message: Some("update completed (uncommitted); review and commit".into()),
+        ..UpdateItem::new(name, "continued")
     })
 }
 
-fn abort_sync(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
+fn abort_update(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<UpdateItem> {
     let st = merge_state(ctx, ws, name)?.with_context(|| format!("no merge in progress for `{name}`"))?;
     let dir = ws.skill_dir(name)?;
     let backup = PathBuf::from(&st.backup);
@@ -956,7 +957,7 @@ fn abort_sync(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
     ctx.state.conn.execute("DELETE FROM merges WHERE workspace=?1 AND skill=?2", params![ws.root.to_string_lossy(), name])?;
     ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [snapshot_key(ws, name)])?;
     redeploy(ctx, ws, name)?;
-    Ok(SyncItem { message: Some("restored your version".into()), ..SyncItem::new(name, "aborted") })
+    Ok(UpdateItem { message: Some("restored your version".into()), ..UpdateItem::new(name, "aborted") })
 }
 
 // ---------------------------------------------------------------- variants, edit, commit
@@ -1021,42 +1022,80 @@ fn freeze_dev_placements(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Directory (and optional commit/tree) that a source repo skill currently deploys.
-pub fn deploy_source(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<(PathBuf, Option<String>, Option<String>, bool)> {
+/// What a link of a source repo skill deploys.
+#[derive(Debug, Clone)]
+pub struct Deployed {
+    pub dir: PathBuf,
+    pub tree: Option<String>,
+    pub commit: Option<String>,
+    /// A checkout (edits show immediately) rather than a snapshot in the store.
+    pub live: bool,
+    /// The branch it comes from (`None` on a detached HEAD).
+    pub branch: Option<String>,
+}
+
+/// What a link of `name` deploys: with a `pin`, that branch; otherwise the skill's default
+/// (its `use` variant, else the working tree).
+pub fn deploy_source(ctx: &Ctx, ws: &SourceRepo, name: &str, pin: Option<&str>) -> Result<Deployed> {
+    let branch = match pin {
+        Some(b) => Some(b.to_string()),
+        None => active_variant(ws, name)?,
+    };
+    match branch {
+        Some(b) if git::current_branch(&ws.root).as_deref() != Some(b.as_str()) => deploy_branch(ctx, ws, name, &b),
+        _ => deploy_working_tree(ctx, ws, name),
+    }
+}
+
+/// The skill in the source repo's checkout — or, while an upstream update has rewritten it
+/// and is not yet committed, the last committed version.
+fn deploy_working_tree(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<Deployed> {
     let rel = ws.skill(name)?.path.clone();
-    let editing = ctx.state.meta_get(&editing_key(ws, name))?;
+    let branch = git::current_branch(&ws.root);
     if let Some(snap) = ctx.state.meta_get(&snapshot_key(ws, name))? {
         let clean = git(&ws.root, &["status", "--porcelain", "--", &rel]).map(|o| o.trim().is_empty()).unwrap_or(false);
         let merging = merge_state(ctx, ws, name)?.is_some();
         let moved = git::head_commit(&ws.root).map(|h| h != snap).unwrap_or(false);
         if clean && !merging && moved {
             ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [snapshot_key(ws, name)])?;
-        } else if editing.as_deref().map(|b| b.is_empty()).unwrap_or(true) {
+        } else {
             let m = local_mirror(ws);
             if let Some(tree) = m.tree_at(&snap, &rel) {
                 let dir = store::from_mirror(ctx, &m, &snap, &rel, &tree)?;
-                return Ok((dir, Some(tree), Some(snap), false));
+                return Ok(Deployed { dir, tree: Some(tree), commit: Some(snap), live: false, branch });
             }
         }
     }
-    if let Some(branch) = editing {
-        let d = if branch.is_empty() { ws.root.join(&rel) } else { worktree_path(ctx, ws, &branch).join(&rel) };
-        return Ok((d, None, None, true));
-    }
-    match active_variant(ws, name)? {
-        None => Ok((ws.root.join(&rel), None, None, true)),
-        Some(branch) => {
-            let commit = git(&ws.root, &["rev-parse", "--verify", &format!("{branch}^{{commit}}")])
-                .with_context(|| format!("variant branch `{branch}` does not exist"))?;
-            let m = Mirror { source: crate::id::SourceId::new("local", &ws.name), dir: ws.root.clone() };
-            let tree = m.tree_at(&commit, &rel).with_context(|| format!("branch `{branch}` has no {rel}"))?;
-            let dir = store::from_mirror(ctx, &m, &commit, &rel, &tree)?;
-            Ok((dir, Some(tree), Some(commit), false))
-        }
-    }
+    Ok(Deployed { dir: ws.root.join(&rel), tree: None, commit: None, live: true, branch })
 }
 
-/// Place a source repo skill for `agents_sel` in `scope` (dev mode or its active variant).
+/// The skill on another branch: its draft while `tricks edit` has it checked out, else a
+/// snapshot of the branch tip (refreshed when the branch moves).
+fn deploy_branch(ctx: &Ctx, ws: &SourceRepo, name: &str, branch: &str) -> Result<Deployed> {
+    let rel = ws.skill(name)?.path.clone();
+    if editing_branch(ctx, ws, name)?.as_deref() == Some(branch) {
+        let d = worktree_path(ctx, ws, branch).join(&rel);
+        if d.exists() {
+            return Ok(Deployed { dir: d, tree: None, commit: None, live: true, branch: Some(branch.into()) });
+        }
+    }
+    let commit = git(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("{branch}^{{commit}}")])
+        .ok()
+        .filter(|c| !c.is_empty())
+        .with_context(|| format!("no branch `{branch}` in source repo {}", ws.name))?;
+    let m = local_mirror(ws);
+    let tree = m.tree_at(&commit, &rel).with_context(|| format!("branch `{branch}` has no {rel}"))?;
+    let dir = store::from_mirror(ctx, &m, &commit, &rel, &tree)?;
+    Ok(Deployed { dir, tree: Some(tree), commit: Some(commit), live: false, branch: Some(branch.into()) })
+}
+
+/// The branch `tricks edit` has checked out for a skill, if any.
+fn editing_branch(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<Option<String>> {
+    Ok(ctx.state.meta_get(&editing_key(ws, name))?.filter(|b| !b.is_empty()))
+}
+
+/// Place every skill-level link of a source repo skill for `agents_sel` in `scope`. A link
+/// already pinned to a branch there keeps its pin; new links follow the default.
 pub fn place_skill(
     ctx: &Ctx,
     ws: &SourceRepo,
@@ -1066,40 +1105,61 @@ pub fn place_skill(
     copy: bool,
     shadow: bool,
 ) -> Result<Vec<crate::state::Placement>> {
-    let (dir, tree, commit, _dev) = deploy_source(ctx, ws, name)?;
+    let key = ws.skill_key(name);
+    let mut targets: HashMap<Option<String>, Deployed> = HashMap::new();
     let mut out = Vec::new();
     for a in agents_sel {
+        let pin =
+            ctx.state.placements("WHERE skill=?1 AND agent=?2 AND scope=?3", &[&key, &a.id, &scope.key()])?.into_iter().find_map(|p| p.pin);
+        let d = match targets.get(&pin) {
+            Some(d) => d.clone(),
+            None => {
+                let d = deploy_source(ctx, ws, name, pin.as_deref())?;
+                targets.insert(pin.clone(), d.clone());
+                d
+            }
+        };
         out.push(deploy::place(
             ctx,
             &PlaceRequest {
-                skill: ws.skill_key(name),
+                skill: key.clone(),
                 origin: "source-repo",
                 agent: a,
                 scope: scope.clone(),
                 name: name.to_string(),
-                target: dir.clone(),
-                tree: tree.clone(),
-                commit: commit.clone(),
+                target: d.dir,
+                tree: d.tree,
+                commit: d.commit,
                 force_copy: copy,
                 shadow,
+                pin,
+                branch: d.branch,
             },
         )?);
     }
     Ok(out)
 }
 
-/// Re-point every placement of a source repo skill at what it should deploy now
-/// (dev checkout, branch being edited, active variant, or merge snapshot).
+/// Re-point every link of a source repo skill at what it should deploy now: its pinned
+/// branch, or the default (working tree, `use` variant, or merge snapshot).
 pub fn redeploy(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<Vec<String>> {
     let key = ws.skill_key(name);
     let existing = ctx.state.placements("WHERE skill=?1", &[&key])?;
-    if existing.is_empty() {
-        return Ok(vec![]);
-    }
-    let (dir, tree, commit, _dev) = deploy_source(ctx, ws, name)?;
+    let mut targets: HashMap<Option<String>, Option<Deployed>> = HashMap::new();
     let mut out = Vec::new();
     for p in existing {
         let Ok(a) = agents::get(&p.agent) else { continue };
+        if !targets.contains_key(&p.pin) {
+            let d = match deploy_source(ctx, ws, name, p.pin.as_deref()) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    ctx.ui.warn(&format!("links of {name} pinned to {}: {e:#}", p.pin.as_deref().unwrap_or("the default")));
+                    None
+                }
+            };
+            targets.insert(p.pin.clone(), d);
+        }
+        let Some(d) = targets[&p.pin].clone() else { continue };
         let placed = deploy::place(
             ctx,
             &PlaceRequest {
@@ -1108,11 +1168,13 @@ pub fn redeploy(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<Vec<String>> {
                 agent: a,
                 scope: Scope::from_key(&p.scope),
                 name: name.to_string(),
-                target: dir.clone(),
-                tree: tree.clone(),
-                commit: commit.clone(),
-                force_copy: p.mode == "copy" && a.follows_links(&dir),
+                force_copy: p.mode == "copy" && a.follows_links(&d.dir),
+                target: d.dir,
+                tree: d.tree,
+                commit: d.commit,
                 shadow: false,
+                pin: p.pin.clone(),
+                branch: d.branch,
             },
         )?;
         out.push(format!("{} ({})", placed.path, placed.mode));
@@ -1120,45 +1182,71 @@ pub fn redeploy(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Return dev links to the working tree once a merge they were frozen for has been
-/// committed (with plain `git commit`). Cheap: only skills with a merge snapshot.
+/// Links of a skill pinned to `branch` (paths).
+fn pinned_to(ctx: &Ctx, ws: &SourceRepo, name: &str, branch: &str) -> Result<Vec<String>> {
+    Ok(ctx
+        .state
+        .placements("WHERE skill=?1 AND pin=?2", &[&ws.skill_key(name), &branch])?
+        .into_iter()
+        .map(|p| format!("{} ({})", p.path, p.mode))
+        .collect())
+}
+
+/// Bring links up to date at startup: return them to the working tree once a merge they
+/// were frozen for has been committed (with plain `git commit`), and refresh snapshots of
+/// branches that have moved. Cheap: only skills with a merge snapshot or snapshot links.
 pub fn reconcile(ctx: &Ctx) -> Result<()> {
     let Some(ws) = current(ctx)? else { return Ok(()) };
+    let head_branch = git::current_branch(&ws.root);
     for name in ws.manifest.skills.keys() {
         if ctx.state.meta_get(&snapshot_key(&ws, name))?.is_some() {
+            redeploy(ctx, &ws, name)?;
+            continue;
+        }
+        let stale = ctx.state.placements("WHERE skill=?1 AND commit_sha IS NOT NULL", &[&ws.skill_key(name)])?.into_iter().any(|p| {
+            let branch = match p.pin.clone() {
+                Some(b) => Some(b),
+                None => active_variant(&ws, name).ok().flatten(),
+            };
+            match branch {
+                Some(b) if head_branch.as_deref() != Some(b.as_str()) => {
+                    git(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")]).ok().as_deref() != p.commit.as_deref()
+                }
+                // Snapshot, but the branch is now checked out: deploy the working tree.
+                Some(_) => true,
+                None => false,
+            }
+        });
+        if stale {
             redeploy(ctx, &ws, name)?;
         }
     }
     Ok(())
 }
 
+/// A source repo skill to link: `name` follows the skill's default, `name@branch` is
+/// pinned to that branch.
 pub fn link_target_for_name(ctx: &Ctx, input: &str) -> Result<Option<LinkTarget>> {
     let Some(ws) = current(ctx)? else { return Ok(None) };
-    let (name, variant) = match input.split_once('@') {
-        Some((n, v)) => (n, Some(v)),
+    let (name, pin) = match input.split_once('@') {
+        Some((n, b)) => (n, Some(b)),
         None => (input, None),
     };
     if !ws.manifest.skills.contains_key(name) {
         return Ok(None);
     }
-    if let Some(v) = variant {
-        let rel = ws.skill(name)?.path.clone();
-        let commit = git(&ws.root, &["rev-parse", "--verify", &format!("{v}^{{commit}}")])?;
-        let m = Mirror { source: crate::id::SourceId::new("local", &ws.name), dir: ws.root.clone() };
-        let tree = m.tree_at(&commit, &rel).context("variant lacks the skill")?;
-        let dir = store::from_mirror(ctx, &m, &commit, &rel, &tree)?;
-        return Ok(Some(LinkTarget {
-            skill: ws.skill_key(name),
-            name: name.into(),
-            dir,
-            tree: Some(tree),
-            commit: Some(commit),
-            dev: false,
-            trial: false,
-        }));
-    }
-    let (dir, tree, commit, dev) = deploy_source(ctx, &ws, name)?;
-    Ok(Some(LinkTarget { skill: ws.skill_key(name), name: name.into(), dir, tree, commit, dev, trial: false }))
+    let d = deploy_source(ctx, &ws, name, pin)?;
+    Ok(Some(LinkTarget {
+        skill: ws.skill_key(name),
+        name: name.into(),
+        dev: d.live,
+        dir: d.dir,
+        tree: d.tree,
+        commit: d.commit,
+        trial: false,
+        pin: pin.map(String::from),
+        branch: d.branch,
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -1176,7 +1264,8 @@ pub fn draft_branch(name: &str) -> String {
 }
 
 /// `tricks edit <skill> [-b <branch>]`: start (or continue) an experiment on a branch,
-/// checked out in `.tricks/work/<branch>`; the skill's links follow the draft.
+/// checked out in `.tricks/work/<branch>`. Links pinned to the branch
+/// (`tricks link <skill>@<branch>`) deploy the draft; other links are left alone.
 pub fn edit(ctx: &Ctx, name: &str, branch: Option<&str>) -> Result<EditReport> {
     let ws = require(ctx)?;
     if !ws.manifest.skills.contains_key(name) {
@@ -1203,7 +1292,8 @@ pub fn edit(ctx: &Ctx, name: &str, branch: Option<&str>) -> Result<EditReport> {
         bail!("branch `{b}` has no {rel} (commit the skill on your main branch first)");
     }
     ctx.state.meta_set(&editing_key(&ws, name), &b)?;
-    let placements = redeploy(ctx, &ws, name)?;
+    redeploy(ctx, &ws, name)?;
+    let placements = pinned_to(ctx, &ws, name, &b)?;
     Ok(EditReport {
         name: name.to_string(),
         branch: Some(b),
@@ -1213,7 +1303,7 @@ pub fn edit(ctx: &Ctx, name: &str, branch: Option<&str>) -> Result<EditReport> {
     })
 }
 
-/// End `edit`: the skill deploys its active variant again (commit your changes with git).
+/// End `edit`: links pinned to the branch deploy its last commit (commit drafts first).
 pub fn edit_done(ctx: &Ctx, name: &str) -> Result<EditReport> {
     let ws = require(ctx)?;
     let rel = ws.skill(name)?.path.clone();
@@ -1228,7 +1318,11 @@ pub fn edit_done(ctx: &Ctx, name: &str) -> Result<EditReport> {
         ctx.ui.warn(&format!("{} has uncommitted changes in {}", name, dir.display()));
     }
     ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [key])?;
-    let placements = redeploy(ctx, &ws, name)?;
+    redeploy(ctx, &ws, name)?;
+    let placements = match &branch {
+        Some(b) => pinned_to(ctx, &ws, name, b)?,
+        None => vec![],
+    };
     Ok(EditReport {
         name: name.to_string(),
         path: dir.join(&rel).to_string_lossy().to_string(),
@@ -1461,8 +1555,17 @@ pub fn merge_branch(ctx: &Ctx, input: &str, o: &MergeOptions) -> Result<MergeRep
         config::table_mut(&mut doc, &["use"]).remove(name);
         config::save_doc(&wf, &doc)?;
     }
+    // Links pinned to the merged branch now follow the default, which has the changes.
     let ws = SourceRepo::open(&ws.root)?;
-    rep.placements = redeploy(ctx, &ws, name)?;
+    let skills: Vec<String> = if o.whole_branch { ws.manifest.skills.keys().cloned().collect() } else { vec![name.to_string()] };
+    for s in &skills {
+        let moved = ctx.state.conn.execute("UPDATE placements SET pin=NULL WHERE skill=?1 AND pin=?2", params![ws.skill_key(s), branch])?;
+        if s == name {
+            rep.placements = redeploy(ctx, &ws, s)?;
+        } else if moved > 0 {
+            redeploy(ctx, &ws, s)?;
+        }
+    }
     Ok(rep)
 }
 

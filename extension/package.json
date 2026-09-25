@@ -2,7 +2,7 @@
   "name": "new-tricks",
   "displayName": "New Tricks",
   "description": "Teach your agents new tricks: author, customize and test agent skills in a source repo — federated search, vendoring with upstream merges, branch experiments, links for testing, lint and publish.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "newtricks",
   "license": "Apache-2.0",
   "repository": {
@@ -148,19 +148,19 @@
         "icon": "$(cloud-download)"
       },
       {
-        "command": "tricks.sync",
-        "title": "Sync with Upstream",
+        "command": "tricks.update",
+        "title": "Update from Upstream",
         "category": "New Tricks",
         "icon": "$(cloud-download)"
       },
       {
-        "command": "tricks.syncContinue",
-        "title": "Continue Sync",
+        "command": "tricks.updateContinue",
+        "title": "Continue Update",
         "category": "New Tricks"
       },
       {
-        "command": "tricks.syncAbort",
-        "title": "Abort Sync",
+        "command": "tricks.updateAbort",
+        "title": "Abort Update",
         "category": "New Tricks"
       },
       {
@@ -299,7 +299,7 @@
           "group": "inline"
         },
         {
-          "command": "tricks.sync",
+          "command": "tricks.update",
           "when": "view == tricks.sourceRepo && viewItem =~ /updateReady/",
           "group": "inline"
         },
@@ -339,18 +339,18 @@
           "group": "4_upstream@1"
         },
         {
-          "command": "tricks.sync",
+          "command": "tricks.update",
           "when": "view == tricks.sourceRepo && viewItem =~ /vendored/",
           "group": "4_upstream@2"
         },
         {
-          "command": "tricks.syncContinue",
-          "when": "view == tricks.sourceRepo && viewItem =~ /syncing/",
+          "command": "tricks.updateContinue",
+          "when": "view == tricks.sourceRepo && viewItem =~ /updating/",
           "group": "4_upstream@3"
         },
         {
-          "command": "tricks.syncAbort",
-          "when": "view == tricks.sourceRepo && viewItem =~ /syncing/",
+          "command": "tricks.updateAbort",
+          "when": "view == tricks.sourceRepo && viewItem =~ /updating/",
           "group": "4_upstream@4"
         },
         {

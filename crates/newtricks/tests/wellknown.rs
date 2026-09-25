@@ -114,7 +114,7 @@ fn wellknown_skill_md_and_archives() {
     std::fs::write(&cfg, read(&cfg).replace("[settings]", "[settings]\nfetch_interval = \"0s\"")).unwrap();
     let o = s.json_in(&ws, &["outdated"]);
     assert_eq!(o["items"][0]["state"], "update-available", "{o}");
-    s.ok_in(&ws, &["sync"]);
+    s.ok_in(&ws, &["update"]);
     assert!(read(&ws.join("skills/tarred/SKILL.md")).contains("tarred v2"));
     commit_all(&ws, "merge tarred");
     assert_eq!(s.json_in(&ws, &["outdated"])["items"][0]["state"], "up-to-date");

@@ -37,6 +37,12 @@ export interface LinkInfo {
   mode: string;
   kind: "dev" | "trial";
   health: string;
+  /** Source repo skills: the branch the link deploys, and whether it is pinned to it (`link <skill>@<branch>`). */
+  branch?: string | null;
+  pinned?: boolean;
+  /** Source repo skills: where the link points. */
+  source?: "working-tree" | "draft" | "snapshot" | null;
+  commit?: string | null;
 }
 
 /** `tricks list`: the source repo's skills, registered source repos, and links. */

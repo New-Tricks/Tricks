@@ -142,10 +142,10 @@ fn clean_merge_preserves_customization_and_is_left_uncommitted() {
     let st = s.json_in(&ws, &["list"]);
     assert_eq!(st["source_repo"]["skills"][0]["update_available"], "v1.1.0", "{st}");
     // C → R preview: shows what the merge would produce without touching the working tree.
-    let cand = s.json_in(&ws, &["sync", "hello", "--dry-run"]).to_string();
+    let cand = s.json_in(&ws, &["update", "hello", "--dry-run"]).to_string();
     assert!(cand.contains("friendly") && cand.contains("tips.md"), "{cand}");
     assert!(git(&ws, &["status", "--porcelain"]).is_empty(), "candidate must not modify the working tree");
-    let r = s.json_in(&ws, &["sync", "hello"]);
+    let r = s.json_in(&ws, &["update", "hello"]);
     assert_eq!(r["items"][0]["state"], "merged", "{r}");
     let merged = read(&p);
     assert!(merged.contains("My custom intro.") && merged.contains("Keep it short and friendly."), "{merged}");
@@ -181,21 +181,21 @@ fn overlapping_change_conflicts_then_continue_or_abort() {
     git(&up, &["tag", "v1.1.0"]);
     set_interval_zero(&s);
     let lock_before = read(&ws.join("tricks.lock"));
-    let r = s.json_in(&ws, &["sync"]);
+    let r = s.json_in(&ws, &["update"]);
     assert_eq!(r["items"][0]["state"], "conflicts", "{r}");
     assert!(read(&p).contains("<<<<<<<"));
     assert_eq!(read(&ws.join("tricks.lock")), lock_before, "base must not move while conflicted");
     // Another merge refuses while one is in progress.
-    let err = s.fail_in(&ws, &["sync"]);
+    let err = s.fail_in(&ws, &["update"]);
     assert!(err.contains("in progress"), "{err}");
     // --continue refuses with markers present.
-    let err = s.fail_in(&ws, &["sync", "--continue"]);
+    let err = s.fail_in(&ws, &["update", "--continue"]);
     assert!(err.contains("unresolved"), "{err}");
     // Abort restores my version.
-    s.ok_in(&ws, &["sync", "--abort"]);
+    s.ok_in(&ws, &["update", "--abort"]);
     assert!(read(&p).contains("Keep it VERY short.") && !read(&p).contains("<<<<<<<"));
     // Redo and resolve.
-    s.ok_in(&ws, &["sync"]);
+    s.ok_in(&ws, &["update"]);
     let resolved = read(&p)
         .lines()
         .filter(|l| !l.starts_with("<<<<<<<") && !l.starts_with("=======") && !l.starts_with(">>>>>>>") && !l.contains("Keep it brief."))
@@ -203,7 +203,7 @@ fn overlapping_change_conflicts_then_continue_or_abort() {
         .join("\n")
         + "\n";
     std::fs::write(&p, resolved).unwrap();
-    s.ok_in(&ws, &["sync", "--continue"]);
+    s.ok_in(&ws, &["update", "--continue"]);
     assert!(read(&ws.join("tricks.lock")).contains(&git(&up, &["rev-parse", "HEAD"])));
 }
 
@@ -245,28 +245,67 @@ fn branch_experiments_and_variants() {
     let deployed = s.home.join(".claude/skills/greeter");
     let target = std::fs::read_link(&deployed).unwrap();
     assert_eq!(target, ws.join("skills/greeter"), "dev link points at the live checkout");
-    // Edit on a branch → worktree, dev link flips to it.
+    // Editing on a branch leaves links that follow the default alone.
     let out = s.json_in(&ws, &["edit", "greeter", "--branch", "terse"]);
     let path = PathBuf::from(out["path"].as_str().unwrap());
     let worktree = PathBuf::from(out["worktree"].as_str().unwrap());
     assert!(path.join("SKILL.md").exists());
-    assert_eq!(std::fs::read_link(&deployed).unwrap(), path);
+    assert_eq!(std::fs::read_link(&deployed).unwrap(), ws.join("skills/greeter"), "edit does not re-point links");
+    assert_eq!(out["placements"], serde_json::json!([]), "{out}");
+    // A link pinned to the branch deploys the draft, live; the other link keeps main.
+    let app = s.project("app");
+    let l = s.json_in(&ws, &["link", "greeter@terse", "--to", app.to_str().unwrap(), "--agents", "claude"]);
+    assert_eq!(l["links"][0]["branch"], "terse", "{l}");
+    let pinned = app.join(".claude/skills/greeter");
+    assert_eq!(std::fs::read_link(&pinned).unwrap(), path);
+    assert_eq!(std::fs::read_link(&deployed).unwrap(), ws.join("skills/greeter"));
+    let links = s.json_in(&ws, &["list", "--links"]);
+    let by_scope = |scope: &str| links["links"].as_array().unwrap().iter().find(|x| x["scope"] == scope).cloned().unwrap();
+    let g = by_scope("global");
+    assert_eq!(
+        (g["branch"].as_str(), g["source"].as_str(), g["pinned"].as_bool()),
+        (Some("main"), Some("working-tree"), Some(false)),
+        "{g}"
+    );
+    let a = by_scope(app.canonicalize().unwrap().to_str().unwrap());
+    assert_eq!((a["branch"].as_str(), a["source"].as_str(), a["pinned"].as_bool()), (Some("terse"), Some("draft"), Some(true)), "{a}");
+    let human = s.ok_in(&ws, &["list", "--links"]);
+    assert!(human.contains("main (working tree, live)") && human.contains("terse (draft, live, pinned)"), "{human}");
+    let status = s.ok_in(&ws, &["list"]);
+    assert!(status.contains("user level (main)") && status.contains("app (terse)"), "{status}");
+    // Pinned links are what `edit` reports.
+    let again = s.json_in(&ws, &["edit", "greeter", "--branch", "terse"]);
+    assert_eq!(again["placements"].as_array().unwrap().len(), 1, "{again}");
     std::fs::write(path.join("SKILL.md"), read(&path.join("SKILL.md")).replace("## Instructions", "## Instructions (terse)")).unwrap();
     let c = s.json_in(&ws, &["edit", "greeter", "--commit", "-m", "terse variant"]);
     assert_eq!(c["branch"], "terse", "{c}");
     assert!(git(&worktree, &["status", "--porcelain"]).is_empty());
-    let _ = worktree;
     let done = s.json_in(&ws, &["edit", "greeter", "--done"]);
     assert_eq!(done["branch"], "terse", "{done}");
     let err = s.fail_in(&ws, &["edit", "greeter", "--done"]);
     assert!(err.contains("not being edited"), "{err}");
-    // Back on the main checkout.
+    // Done editing: the pinned link deploys a snapshot of the branch tip.
+    let t = std::fs::read_link(&pinned).unwrap();
+    assert!(t.starts_with(&s.data), "snapshot in the store: {}", t.display());
+    assert!(read(&pinned.join("SKILL.md")).contains("(terse)"));
     assert_eq!(std::fs::read_link(&deployed).unwrap(), ws.join("skills/greeter"));
+    let human = s.ok_in(&ws, &["list", "--links"]);
+    let tip = git(&ws, &["rev-parse", "--short=7", "terse"]);
+    assert!(human.contains(&format!("terse @ {tip} (snapshot, pinned)")), "{human}");
+    // The branch moves: the snapshot follows on the next command.
+    let md = worktree.join("skills/greeter/SKILL.md");
+    std::fs::write(&md, read(&md).replace("(terse)", "(terser)")).unwrap();
+    commit_all(&worktree, "terser");
+    s.ok_in(&ws, &["list"]);
+    assert!(read(&pinned.join("SKILL.md")).contains("(terser)"));
+    // `link greeter` (no branch) un-pins it.
+    s.ok_in(&ws, &["link", "greeter", "--to", app.to_str().unwrap(), "--agents", "claude"]);
+    assert_eq!(std::fs::read_link(&pinned).unwrap(), ws.join("skills/greeter"));
     // Use the variant: store snapshot of the branch tip.
     s.ok_in(&ws, &["use", "greeter@terse"]);
     let t = std::fs::read_link(&deployed).unwrap();
     assert!(t.starts_with(&s.data), "variant deploys from the store: {}", t.display());
-    assert!(read(&deployed.join("SKILL.md")).contains("(terse)"));
+    assert!(read(&deployed.join("SKILL.md")).contains("(terser)"));
     assert!(read(&ws.join("tricks.toml")).contains("use = \"terse\""));
     // Local override back to default without touching the committed manifest.
     s.ok_in(&ws, &["use", "greeter@default", "--local"]);
@@ -402,7 +441,7 @@ fn contribute_dry_run_contains_only_the_customization() {
 }
 
 #[test]
-fn sync_follows_an_upstream_rename() {
+fn update_follows_an_upstream_rename() {
     let (s, up, ws) = setup();
     s.ok_in(&ws, &["vendor", "acme/skills//hello@main"]);
     commit_all(&ws, "vendor hello");
@@ -413,7 +452,7 @@ fn sync_follows_an_upstream_rename() {
     std::fs::write(&md, read(&md).replace("Keep it short.", "Keep it short. Moved.")).unwrap();
     commit_all(&up, "reorganize");
     set_interval_zero(&s);
-    let r = s.json_in(&ws, &["sync"]);
+    let r = s.json_in(&ws, &["update"]);
     assert_eq!(r["items"][0]["state"], "merged", "{r}");
     assert!(read(&ws.join("skills/hello/SKILL.md")).contains("Moved."));
     assert!(read(&ws.join("tricks.lock")).contains("upstream_path = \"skills/greetings/hello\""), "{}", read(&ws.join("tricks.lock")));
@@ -450,6 +489,10 @@ fn merge_brings_an_experiment_branch_back() {
     std::fs::write(&mg, read(&mg).replace("## Examples", "## Examples (main)")).unwrap();
     commit_all(&ws, "main edit");
     s.ok_in(&ws, &["use", "greeter@terse"]);
+    let app = s.project("app");
+    s.ok_in(&ws, &["link", "greeter@terse", "--to", app.to_str().unwrap(), "--agents", "claude"]);
+    let pinned = app.join(".claude/skills/greeter");
+    assert_eq!(std::fs::read_link(&pinned).unwrap(), wt.join("skills/greeter"), "pinned to the draft");
 
     // Default: only the skill's folder, one commit; the other change is reported.
     let r = s.json_in(&ws, &["merge", "greeter@terse"]);
@@ -464,6 +507,9 @@ fn merge_brings_an_experiment_branch_back() {
     // The experiment is over: not edited, not used as a variant, links back on main.
     assert!(!read(&ws.join("tricks.toml")).contains("use = \"terse\""));
     assert_eq!(std::fs::read_link(s.home.join(".claude/skills/greeter")).unwrap(), ws.join("skills/greeter"));
+    assert_eq!(std::fs::read_link(&pinned).unwrap(), ws.join("skills/greeter"), "links pinned to terse move to main");
+    let links = s.json_in(&ws, &["list", "--links"]);
+    assert!(links["links"].as_array().unwrap().iter().all(|l| l["pinned"] == false), "{links}");
     let err = s.fail_in(&ws, &["edit", "greeter", "--done"]);
     assert!(err.contains("not being edited"), "{err}");
     // Nothing left to merge for greeter; --whole-branch takes the rest.

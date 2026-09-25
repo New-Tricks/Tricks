@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+
+- Each link deploys its own branch: **Link to Project…** asks whether to follow the skill's default or a branch, and the Links view shows what every link deploys (`main (live)`, `terse (draft, pinned)`, `verbose @ 3f2a1c9`). **Experiment on a Branch…** no longer re-points your other links.
+- **Update from Upstream** (was *Sync with Upstream*), **Continue Update** / **Abort Update**, following the CLI's `tricks update`.
+
 ## 0.5.0
 
 - The Links view shows this source repo's links and all trials separately; items unlink or untry as appropriate, and **Remove All Trials** joins **Unlink This Source Repo's Skills**.

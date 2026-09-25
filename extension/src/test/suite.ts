@@ -11,7 +11,7 @@ export async function run(): Promise<void> {
   const api: any = await ext!.activate();
   // Commands are registered.
   const cmds = await vscode.commands.getCommands(true);
-  for (const c of ["tricks.search", "tricks.sync", "tricks.mergeBranch", "tricks.commitDraft", "tricks.createSkill", "tricks.removeSkill", "tricks.publish", "tricks.changes", "tricks.linkAll", "tricks.linkToProject", "tricks.try", "tricks.editDone"]) {
+  for (const c of ["tricks.search", "tricks.update", "tricks.mergeBranch", "tricks.commitDraft", "tricks.createSkill", "tricks.removeSkill", "tricks.publish", "tricks.changes", "tricks.linkAll", "tricks.linkToProject", "tricks.try", "tricks.editDone"]) {
     assert.ok(cmds.includes(c), `missing command ${c}`);
   }
   // Status via the real binary over JSON-RPC.

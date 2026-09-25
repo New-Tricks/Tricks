@@ -214,9 +214,9 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
             to(json!({ "report": r, "skillPaths": paths }))
         }
         "sourceRepo/outdated" => to(ws::outdated(ctx, &ws::require(ctx)?, s(p, "skill"))?),
-        "sourceRepo/sync" => {
-            let o = ws::SyncOptions { only: s(p, "skill"), dry_run: b(p, "dryRun"), cont: b(p, "continue"), abort: b(p, "abort") };
-            to(ws::sync(ctx, &ws::require(ctx)?, &o)?)
+        "sourceRepo/update" => {
+            let o = ws::UpdateOptions { only: s(p, "skill"), dry_run: b(p, "dryRun"), cont: b(p, "continue"), abort: b(p, "abort") };
+            to(ws::update(ctx, &ws::require(ctx)?, &o)?)
         }
         "sourceRepo/edit" => {
             let skill = req(p, "skill")?;
