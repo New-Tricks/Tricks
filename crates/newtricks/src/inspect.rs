@@ -80,7 +80,8 @@ pub struct ShowReport {
     pub listed_in: Vec<String>,
     pub installs: Option<i64>,
     pub trust: String,
-    pub installed: bool,
+    /// Currently linked for a trial.
+    pub linked: bool,
     pub vendored: bool,
     pub store_path: String,
     /// Catalog signals (Tessl scores, ClawHub scan results, …).
@@ -154,7 +155,7 @@ fn report(ctx: &Ctx, o: Origin, dir: &Path, license: LicenseRecord) -> Result<Sh
         listed_in,
         installs,
         trust: crate::index::trust_for(o.id.source.owner(), &o.id.source.repo_path, &identity, &starred).into(),
-        installed: crate::user::installed_ids(ctx)?.contains(&id),
+        linked: crate::index::linked_ids(ctx).contains(&id),
         vendored: crate::source_repo::vendored_upstreams(ctx)?.contains(&id),
         store_path: dir.to_string_lossy().to_string(),
         signals,

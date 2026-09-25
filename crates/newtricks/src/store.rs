@@ -158,24 +158,17 @@ pub fn remove_dir_force(p: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Trees that must be kept: locks, placements, pending and auto updates, and the
-/// previous deployment of each (skill, agent) for rollback.
+/// Trees that must be kept: anything a placement points at, and the base and last
+/// fetched upstream snapshots of vendored skills whose upstream is catalog-hosted (not in
+/// git, so they cannot be rebuilt from a mirror).
 pub fn referenced(ctx: &Ctx) -> Result<BTreeSet<String>> {
     let mut keep = BTreeSet::new();
-    let lock = crate::config::UserLock::load(&ctx.paths.user_lock())?;
-    keep.extend(lock.skills.into_iter().map(|s| s.tree));
     let c = &ctx.state.conn;
-    for sql in [
-        "SELECT tree FROM placements WHERE tree IS NOT NULL",
-        "SELECT to_tree FROM pending_updates WHERE to_tree IS NOT NULL",
-        "SELECT tree FROM auto_deployed WHERE tree IS NOT NULL",
-        "SELECT tree FROM (SELECT tree, ROW_NUMBER() OVER (PARTITION BY skill, agent ORDER BY at DESC) AS rn FROM deployments WHERE tree IS NOT NULL) WHERE rn <= 2",
-    ] {
-        let mut st = c.prepare(sql)?;
-        for r in st.query_map([], |r| r.get::<_, String>(0))? {
-            keep.insert(r?);
-        }
+    let mut st = c.prepare("SELECT tree FROM placements WHERE tree IS NOT NULL")?;
+    for r in st.query_map([], |r| r.get::<_, String>(0))? {
+        keep.insert(r?);
     }
+    keep.extend(crate::source_repo::hosted_snapshots(ctx)?);
     Ok(keep)
 }
 

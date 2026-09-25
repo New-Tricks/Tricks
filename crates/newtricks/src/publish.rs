@@ -458,6 +458,12 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
                 lic_status = "fail";
                 blocked = true;
                 lic_details.push(format!("{name}: {m}"));
+                if s.license_override.is_none() {
+                    lic_details.push(format!(
+                        "{name}: if you have permission (e.g. a separate agreement), record it in tricks.toml: \
+                         [skills.{name}] license-override = {{ justification = \"…\" }}"
+                    ));
+                }
             }
         }
     }

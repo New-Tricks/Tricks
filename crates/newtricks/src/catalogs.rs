@@ -82,7 +82,7 @@ fn classify_key(key: &str, entry: &CatalogEntry) -> Result<Kind> {
 
 /// All configured catalogs (user config + defaults).
 pub fn list(ctx: &Ctx) -> Result<Vec<Catalog>> {
-    let m = crate::user::load_manifest(ctx)?;
+    let m = crate::user::config(ctx)?;
     let mut out: BTreeMap<String, Catalog> = BTreeMap::new();
     if m.settings.default_catalogs {
         for r in DEFAULT_REPOS {
@@ -132,7 +132,7 @@ pub fn normalize_input(ctx: &Ctx, input: &str, kind: Option<&str>) -> Result<(St
 
 pub fn add(ctx: &Ctx, input: &str, kind: Option<&str>) -> Result<(String, Kind)> {
     let (key, k) = normalize_input(ctx, input, kind)?;
-    let path = ctx.paths.user_manifest();
+    let path = ctx.paths.user_config();
     let mut doc = config::load_doc(&path)?;
     let entry = CatalogEntry { kind: if k == Kind::Repo { None } else { Some(k.as_str().into()) }, url: None, disabled: false };
     config::table_mut(&mut doc, &["catalogs"]).insert(&key, config::to_inline(&entry)?);
@@ -141,13 +141,13 @@ pub fn add(ctx: &Ctx, input: &str, kind: Option<&str>) -> Result<(String, Kind)>
 }
 
 pub fn remove(ctx: &Ctx, input: &str) -> Result<String> {
-    let m = crate::user::load_manifest(ctx)?;
+    let m = crate::user::config(ctx)?;
     let key = if m.catalogs.contains_key(input) {
         input.to_string()
     } else {
         normalize_input(ctx, input, None).map(|(k, _)| k).unwrap_or_else(|_| input.to_string())
     };
-    let path = ctx.paths.user_manifest();
+    let path = ctx.paths.user_config();
     let mut doc = config::load_doc(&path)?;
     if DEFAULT_REPOS.contains(&key.as_str()) && !m.catalogs.contains_key(&key) {
         // Disable a default catalog.
@@ -181,7 +181,7 @@ pub fn refresh(ctx: &Ctx, force: bool, only: Option<&str>) -> Result<RefreshRepo
     if ctx.opts.offline {
         return Ok(rep);
     }
-    let interval = crate::user::load_manifest(ctx)?.fetch_interval();
+    let interval = crate::user::config(ctx)?.fetch_interval();
     // Plain repositories are fetched in parallel; catalogs one by one.
     let mut repo_jobs = Vec::new();
     let mut rest = Vec::new();
@@ -386,7 +386,7 @@ pub(crate) fn store_prefetched(ctx: &Ctx, p: Prefetched) -> Result<()> {
 
 /// `index:` freshness keys that are still fresh (a snapshot for prefetching threads).
 pub(crate) fn fresh_index_keys(ctx: &Ctx) -> BTreeSet<String> {
-    let interval = crate::user::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
+    let interval = crate::user::config(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
     let since = now() - interval.as_secs() as i64;
     let Ok(mut st) = ctx.state.conn.prepare("SELECT key FROM fetches WHERE key LIKE 'index:%' AND at > ?1") else { return BTreeSet::new() };
     st.query_map([since], |r| r.get::<_, String>(0)).map(|rows| rows.flatten().collect()).unwrap_or_default()
@@ -787,7 +787,7 @@ pub(crate) fn live_mark(ctx: &Ctx, adapter: &str, q: &str) -> Result<()> {
 
 /// Ensure repositories are indexed recently enough (bounded, parallel work for live adapters).
 pub(crate) fn ensure_repos_indexed(ctx: &Ctx, repos: &[SourceId]) {
-    let interval = crate::user::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
+    let interval = crate::user::config(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
     let stale: Vec<(SourceId, Option<Vec<String>>, String)> = repos
         .iter()
         .filter(|s| ctx.state.is_stale(&format!("index:{s}"), interval).unwrap_or(true))
@@ -806,7 +806,7 @@ pub(crate) fn ensure_repos_indexed(ctx: &Ctx, repos: &[SourceId]) {
 /// Index only the pointed-to skill directories of each repository (catalog pointers
 /// often land in large application repos). Freshness is tracked per directory.
 pub(crate) fn ensure_pointers_indexed(ctx: &Ctx, pointers: &[(SourceId, String)]) {
-    let interval = crate::user::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
+    let interval = crate::user::config(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
     let mut by_repo: BTreeMap<SourceId, Vec<String>> = BTreeMap::new();
     for (src, dir) in pointers {
         let key = format!("index:{src}//{dir}");

@@ -33,11 +33,10 @@ CREATE TABLE IF NOT EXISTS placements(
   skill TEXT NOT NULL, origin TEXT NOT NULL, agent TEXT NOT NULL, scope TEXT NOT NULL,
   path TEXT NOT NULL UNIQUE, mode TEXT NOT NULL, target TEXT NOT NULL,
   tree TEXT, commit_sha TEXT, shadow_backup TEXT, exclude_file TEXT, exclude_entry TEXT, created_at INTEGER);
-CREATE TABLE IF NOT EXISTS deployments(
-  id INTEGER PRIMARY KEY, skill TEXT, agent TEXT, scope TEXT, tree TEXT, commit_sha TEXT, mode TEXT, action TEXT, at INTEGER);
-CREATE TABLE IF NOT EXISTS pending_updates(
-  skill TEXT PRIMARY KEY, from_commit TEXT, to_commit TEXT, to_tree TEXT, ref_kind TEXT, ref_name TEXT, risk TEXT, at INTEGER);
-CREATE TABLE IF NOT EXISTS auto_deployed(skill TEXT PRIMARY KEY, commit_sha TEXT, tree TEXT, at INTEGER);
+-- Tables of the user-scope installs removed in 0.3.
+DROP TABLE IF EXISTS deployments;
+DROP TABLE IF EXISTS pending_updates;
+DROP TABLE IF EXISTS auto_deployed;
 CREATE TABLE IF NOT EXISTS merges(
   workspace TEXT NOT NULL, skill TEXT NOT NULL, target_commit TEXT, target_tree TEXT, target_path TEXT,
   backup TEXT, conflicts TEXT, at INTEGER, PRIMARY KEY(workspace, skill));
@@ -54,7 +53,8 @@ pub fn now() -> i64 {
 pub struct Placement {
     pub id: i64,
     pub skill: String,
-    /// `user` (installed via add/install), `link` (test deployment), `source-repo` (dev link)
+    /// `source-repo` (a source repo or local skill, dev mode or a variant), `link` (an upstream
+    /// skill under trial), `agent-skill` (the bundled skill), `user` (a 0.2 user-scope install)
     pub origin: String,
     pub agent: String,
     /// `global` or an absolute project path
@@ -168,24 +168,6 @@ impl State {
 
     pub fn delete_placement(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM placements WHERE id=?1", [id])?;
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn record_deployment(
-        &self,
-        skill: &str,
-        agent: &str,
-        scope: &str,
-        tree: Option<&str>,
-        commit: Option<&str>,
-        mode: &str,
-        action: &str,
-    ) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO deployments(skill, agent, scope, tree, commit_sha, mode, action, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![skill, agent, scope, tree, commit, mode, action, now()],
-        )?;
         Ok(())
     }
 

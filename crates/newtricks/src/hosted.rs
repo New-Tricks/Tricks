@@ -1,7 +1,6 @@
 //! Catalog-hosted skills (not in git): `.well-known/agent-skills` sites and native
-//! ClawHub skills. One interface for fetch-and-verify, version labels and update checks.
+//! ClawHub skills. One interface for fetch-and-verify, store snapshots and version labels.
 
-use crate::config::LockedSkill;
 use crate::ctx::Ctx;
 use crate::id::SkillId;
 use anyhow::{Result, bail};
@@ -77,26 +76,70 @@ pub fn fetch(ctx: &Ctx, id: &SkillId, version: Option<&str>) -> Result<Outcome> 
     }
 }
 
-/// A newer published version than the locked one: (label, lock commit).
-pub fn newer(ctx: &Ctx, locked: &LockedSkill, refresh: bool) -> Result<Option<(String, String)>> {
-    let id = SkillId::parse_canonical(&locked.id)?;
-    match kind(&id) {
-        Some(Kind::WellKnown) => {
-            if refresh {
-                let (origin, _) = crate::wellknown::lookup(ctx, &locked.id)?;
-                let _ = crate::catalogs::refresh(ctx, false, Some(&origin));
-            }
-            let (_, entry) = crate::wellknown::lookup(ctx, &locked.id)?;
-            Ok(entry.digest.filter(|d| d != &locked.commit).map(|d| (d.trim_start_matches("sha256:").chars().take(12).collect(), d)))
+/// A hosted skill fetched and verified into the store.
+pub struct Stored {
+    pub dir: std::path::PathBuf,
+    pub tree: String,
+    pub commit: String,
+    pub label: String,
+    pub ref_kind: &'static str,
+}
+
+pub enum StoreOutcome {
+    Stored(Stored),
+    /// Hosted by GitHub after all: use this git skill id instead.
+    Redirect(String),
+}
+
+/// Fetch (latest, or `version` for ClawHub), verify and add to the store.
+pub fn fetch_to_store(ctx: &Ctx, id: &SkillId, version: Option<&str>) -> Result<StoreOutcome> {
+    Ok(match fetch(ctx, id, version)? {
+        Outcome::Fetched(f) => {
+            let (dir, tree) = crate::store::from_dir(ctx, f.dir.path())?;
+            StoreOutcome::Stored(Stored { dir, tree, commit: f.commit, label: f.label, ref_kind: f.ref_kind })
         }
-        Some(Kind::ClawHub) => {
-            if ctx.opts.offline {
-                return Ok(None);
-            }
-            let (owner, slug) = crate::clawhub::owner_slug(&id)?;
-            let v = crate::clawhub::latest_version(ctx, &owner, &slug)?;
-            Ok((v != locked.ref_name).then(|| (v.clone(), format!("clawhub:{v}"))))
-        }
-        None => Ok(None),
+        Outcome::Redirect(git_id) => StoreOutcome::Redirect(git_id),
+    })
+}
+
+/// Re-read the catalog that lists a hosted skill when it is stale, so a new published
+/// revision is seen (`.well-known` sites are indexed; ClawHub is asked directly).
+pub fn refresh_listing(ctx: &Ctx, id: &SkillId) -> Result<()> {
+    if kind(id) == Some(Kind::WellKnown) {
+        let (origin, _) = crate::wellknown::lookup(ctx, &id.to_string())?;
+        crate::catalogs::refresh(ctx, false, Some(&origin))?;
+    }
+    Ok(())
+}
+
+/// Re-fetch exactly the revision recorded as `commit`, when the catalog can serve it
+/// again (ClawHub versions are immutable; `.well-known` indexes only serve the latest).
+pub fn refetch(ctx: &Ctx, id: &SkillId, commit: &str) -> Result<Option<Stored>> {
+    match (kind(id), commit.strip_prefix("clawhub:")) {
+        (Some(Kind::ClawHub), Some(v)) => match fetch_to_store(ctx, id, Some(v))? {
+            StoreOutcome::Stored(s) => Ok(Some(s)),
+            StoreOutcome::Redirect(_) => Ok(None),
+        },
+        _ => Ok(None),
+    }
+}
+
+/// The latest revision the index knows for a hosted skill (no network).
+pub fn indexed_commit(ctx: &Ctx, id: &SkillId) -> Option<String> {
+    use rusqlite::OptionalExtension;
+    ctx.state
+        .conn
+        .query_row("SELECT commit_sha FROM skills WHERE id=?1", [id.to_string()], |r| r.get::<_, Option<String>>(0))
+        .optional()
+        .ok()
+        .flatten()
+        .flatten()
+}
+
+/// Human label for a hosted revision: ClawHub version or a short digest.
+pub fn label(commit: &str) -> String {
+    match commit.strip_prefix("clawhub:") {
+        Some(v) => v.to_string(),
+        None => commit.trim_start_matches("sha256:").chars().take(12).collect(),
     }
 }

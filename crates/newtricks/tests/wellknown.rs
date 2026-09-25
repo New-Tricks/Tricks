@@ -82,15 +82,25 @@ fn wellknown_skill_md_and_archives() {
     assert!(!names.contains(&"tampered") && !names.contains(&"evil"));
 
     let host = base.trim_start_matches("http://");
-    s.ok(&["add", &format!("{host}/.well-known/agent-skills//tarred"), "--agents", "claude"]);
-    s.ok(&["add", &format!("{host}/.well-known/agent-skills//zipped"), "--agents", "claude"]);
-    s.ok(&["add", &format!("{host}/.well-known/agent-skills//single"), "--agents", "claude"]);
-    let skills = s.home.join(".claude/skills");
+    let id = |n: &str| format!("{host}/.well-known/agent-skills//{n}");
+    // Try them in a project.
+    let proj = s.project("app");
+    for n in ["tarred", "zipped", "single"] {
+        s.ok_in(&proj, &["link", &id(n), "--agents", "claude"]);
+    }
+    let skills = proj.join(".claude/skills");
     assert!(skills.join("tarred/scripts/run.sh").exists());
     assert!(skills.join("zipped/references/notes.md").exists());
-    assert!(std::fs::read_to_string(skills.join("single/SKILL.md")).unwrap().contains("single v1"));
+    assert!(read(&skills.join("single/SKILL.md")).contains("single v1"));
+    // Vendor one into a source repo.
+    let ws = s.project("my-skills");
+    s.ok_in(&ws, &["init"]);
+    let v = s.json_in(&ws, &["vendor", &id("tarred")]);
+    assert_eq!(v["upstream"], id("tarred"), "{v}");
+    assert!(v["base"].as_str().unwrap().starts_with("sha256:"), "{v}");
+    commit_all(&ws, "vendor tarred");
 
-    // A new version is detected by digest and applied on update.
+    // A new version is detected by digest and merged.
     let tgz2 = tar_gz(&[("SKILL.md", &md("tarred", "v2")), ("scripts/run.sh", b"#!/bin/sh\necho hi\n")]);
     publish_index(
         &files,
@@ -101,13 +111,13 @@ fn wellknown_skill_md_and_archives() {
         ],
     );
     let cfg = s.config.join("tricks.toml");
-    std::fs::write(&cfg, std::fs::read_to_string(&cfg).unwrap().replace("[settings]", "[settings]\nfetch_interval = \"0s\"")).unwrap();
-    let o = s.json(&["outdated"]);
-    let pending: Vec<&str> = o.as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
-    assert_eq!(pending, vec!["tarred"], "{o}");
-    s.ok(&["update", "--yes"]);
-    assert!(std::fs::read_to_string(skills.join("tarred/SKILL.md")).unwrap().contains("tarred v2"));
-    assert!(s.json(&["outdated"]).as_array().unwrap().is_empty());
+    std::fs::write(&cfg, read(&cfg).replace("[settings]", "[settings]\nfetch_interval = \"0s\"")).unwrap();
+    let o = s.json_in(&ws, &["merge", "--dry-run"]);
+    assert_eq!(o["items"][0]["state"], "update-available", "{o}");
+    s.ok_in(&ws, &["merge"]);
+    assert!(read(&ws.join("skills/tarred/SKILL.md")).contains("tarred v2"));
+    commit_all(&ws, "merge tarred");
+    assert_eq!(s.json_in(&ws, &["merge", "--dry-run"])["items"][0]["state"], "up-to-date");
 }
 
 #[test]
