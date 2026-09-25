@@ -2,7 +2,7 @@
   "name": "new-tricks",
   "displayName": "New Tricks",
   "description": "Teach your agents new tricks: author, customize and test agent skills in a source repo — federated search, vendoring with upstream merges, branch experiments, links for testing, lint and publish.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "newtricks",
   "license": "Apache-2.0",
   "repository": {
@@ -165,7 +165,7 @@
       },
       {
         "command": "tricks.editOnBranch",
-        "title": "Edit on Branch…",
+        "title": "Experiment on a Branch…",
         "category": "New Tricks",
         "icon": "$(git-branch)"
       },
@@ -206,15 +206,21 @@
       },
       {
         "command": "tricks.unlink",
-        "title": "Unlink",
+        "title": "Unlink / Untry",
         "category": "New Tricks",
         "icon": "$(debug-disconnect)"
       },
       {
         "command": "tricks.unlinkAll",
-        "title": "Remove All Links",
+        "title": "Unlink This Source Repo's Skills",
         "category": "New Tricks",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "tricks.untryAll",
+        "title": "Remove All Trials",
+        "category": "New Tricks",
+        "icon": "$(beaker)"
       },
       {
         "command": "tricks.publish",
@@ -272,6 +278,11 @@
         },
         {
           "command": "tricks.unlinkAll",
+          "when": "view == tricks.links",
+          "group": "navigation"
+        },
+        {
+          "command": "tricks.untryAll",
           "when": "view == tricks.links",
           "group": "navigation"
         }
@@ -349,7 +360,7 @@
         },
         {
           "command": "tricks.unlink",
-          "when": "view == tricks.links && viewItem == link",
+          "when": "view == tricks.links && (viewItem == link || viewItem == trial)",
           "group": "inline"
         },
         {

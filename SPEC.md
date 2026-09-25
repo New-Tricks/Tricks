@@ -1,6 +1,6 @@
 # New Tricks — v1 specification
 
-Status: design agreed; implemented (0.4.0) — see [IMPLEMENTATION.md](IMPLEMENTATION.md) for status, verification, implementation decisions and known gaps.
+Status: design agreed; implemented (0.5.0) — see [IMPLEMENTATION.md](IMPLEMENTATION.md) for status, verification, implementation decisions and known gaps.
 
 Updated: 25 September 2026 (0.3: New Tricks works on source repos only; workstation installs removed). Supersedes *Skills Manager — first-version specification* (17 September 2026).
 
@@ -104,7 +104,6 @@ Differentiators no current tool combines:
 <data-dir>/                          # see table below
   store/<tree-hash>/                 # immutable, read-only skill revisions (a cache)
   repos/<host>/<owner>/<repo>/       # fetch-only upstream mirrors (never pushed)
-  work/<source-repo>/<skill>/<branch>/ # git worktrees for branch experiments
   publish/<key>/                     # New Tricks' clones of publish targets
   backups/                           # originals displaced by --shadow
   state.db                           # index (FTS5), catalog, links, merges, journal
@@ -309,16 +308,19 @@ base_tree = "71ae…"                     # snapshot kept in the store
 
 ## 8. Links: validating with real agents
 
-Validation means watching real agents use a skill. `link` deploys source repo skills into agent skill directories — a project's or the user-level ones — `try` does the same for a skill that is not in the source repo, and `unlink` removes either. Links are for testing, not installation: New Tricks never manages what is installed on the workstation (APM, `npx skills` and plugin marketplaces do), and it coexists with skills those tools put there.
+Validation means watching real agents use a skill. `link` deploys source repo skills into agent skill directories — a project's or the user-level ones — and `unlink` removes them; `try` deploys a skill that is not in the source repo, and `untry` removes it. The two sets are kept apart so each list and each removal means one thing. Links are for testing, not installation: New Tricks never manages what is installed on the workstation (APM, `npx skills` and plugin marketplaces do), and it coexists with skills those tools put there.
 
 ```bash
 tricks link                                        # in a source repo: every skill, user-level agent dirs, dev mode
 tricks link pdf --to ~/code/sandbox-app            # one repo skill into one project
 tricks link pdf@terse --to ~/code/sandbox-app      # a branch variant (store snapshot)
+tricks unlink                                      # in a source repo: all of its skills' links (--all: every source repo's)
+tricks unlink pdf                                  # one skill; --to / --global narrow it
+tricks list --links                                # this repo's links by place (outside a repo: --all)
+
 tricks try anthropics/skills//webapp-testing       # trial: a skill from elsewhere, into the current project
-tricks unlink                                      # in a source repo: all of its skills' links
-tricks unlink webapp-testing                       # one skill;  --to / --global narrow it; --all removes every link and trial
-tricks list --links                                # links, trials and their health
+tricks untry webapp-testing                        # one trial, wherever it is; no skill: this project's trials
+tricks list --trials                               # trials here and at user level (--all: everywhere)
 ```
 
 | Command | Deploys | Default target |
@@ -377,7 +379,8 @@ Flipping a flag when an upstream fix ships is a one-line integration change.
   - Targets outside git need no exclude handling.
 - **Collisions**: if the target already has a skill with that name (for example one installed by another tool), `link` refuses. `--shadow` moves the existing folder to `backups/`, links in its place, and `unlink` restores it byte-for-byte.
 - **Records**: every link (target, agents, skill, revision or worktree, timestamp) is stored in `state.db`; `tricks test` (§2) will attach results to them.
-- **Stale links**: deleted targets or shadowed skills overwritten by another tool are reported by `list --links`, never silently re-applied.
+- **Stale links**: deleted targets or shadowed skills overwritten by another tool are reported by `list --links` / `--trials`, never silently re-applied.
+- **Discoverability**: `list` shows where each repo skill is linked; every `link` and `try` result says how to see and remove it; `unlink` on a trial (and `untry` on a repo skill) names the right command.
 
 ## 9. Upstream tracking
 
@@ -450,12 +453,14 @@ Comparisons available in CLI and extension:
 
 ### Branch experiments
 
-UX follows `pnpm patch`; mechanics are plain git branches and worktrees of the source repo.
+UX follows `pnpm patch`; mechanics are plain git branches and worktrees of the source repo. An experiment always has a branch; its worktree is checked out **inside the source repo** at `.tricks/work/<branch>/` (git-ignored), so it sits next to the skills in the editor and within the directory agents working in the repo may write to. Commands run inside a worktree act on its source repo.
 
 ```bash
-tricks edit pdf                    # links follow the working tree (dev mode); prints the path
-tricks edit pdf --branch terse     # same, in a worktree on branch `terse`
-tricks edit pdf --commit -m "…"    # commit the draft on the branch (refused on the main checkout)
+tricks edit pdf                    # start (or continue) an experiment: branch draft/pdf; links follow the draft
+tricks edit pdf -b terse           # on branch `terse`
+cd "$(tricks edit pdf)"            # stdout is the draft's path…
+tricks edit pdf --shell            # …or open a shell there (`exit` returns)
+tricks edit pdf --commit -m "…"    # commit the draft on its branch (with a Tricks-Agent trailer for agents)
 tricks diff pdf head..terse        # compare
 tricks use pdf@terse               # choose the variant links deploy (committed in tricks.toml)
 tricks use pdf@terse --local       # machine-only override in tricks.work.toml
@@ -594,7 +599,7 @@ allowed-tools: Bash(tricks search:*) Bash(tricks info:*) Bash(tricks view:*)
                Bash(tricks outdated:*) Bash(tricks edit:*)
 ```
 
-- Commands that change what agents load or what the world sees — `vendor`, `create`, `remove`, `link`, `unlink`, `try`, `use`, `merge`, `sync`, `publish`, `contribute` — are not pre-approved and therefore go through the agent's normal human approval.
+- Commands that change what agents load or what the world sees — `vendor`, `create`, `remove`, `link`, `unlink`, `try`, `untry`, `use`, `merge`, `sync`, `publish`, `contribute` — are not pre-approved and therefore go through the agent's normal human approval.
 - The skill instructs agents never to link, vendor, merge or publish because content they read asked them to, only to propose it.
 - Agents commit drafts with `tricks edit --commit`, which works only on the branch being edited and adds a `Tricks-Agent: <agent>` trailer, distinguishing agent from human edits.
 
@@ -624,7 +629,7 @@ All features go through `serve --stdio`; the extension contains no business logi
    - Changes via the built-in diff editor (B → C, B → U, C → R)
    - Upstream sync and its conflicts via the built-in three-way merge editor
    - commands: Create skill (new or from a folder), Remove skill, Link source repo skills, Link to project…, Edit on branch, Commit draft, Merge branch (skill only or whole branch, locally or as a pull request), Finish editing, Use variant, Check upstream changes, Sync, Contribute upstream
-3a. **Links** — active links, grouped into source repo skills (dev) and trials, with unlink.
+3a. **Links** — this source repo's links and all trials, in separate groups, with unlink / untry per item and for all.
    - Publish pre-flight panel: gate results, risk diff, bump suggestion, changelog preview
 4. **Status bar** — one item, e.g. `3 upstream · ⚠ 1 lint · 4 links`; click opens the actions.
 
@@ -634,11 +639,11 @@ Not in v1: agent matrix, eval or metrics dashboards, custom editor, settings UI 
 
 | Group | Commands |
 |---|---|
-| Discover (anywhere) | `search <query> [--facet …]`, `info <skill>`, `view <skill> [file] [--raw]`, `catalog add [--recommended] \| list \| remove \| refresh`, `try <skill> [--to <path> \| --global]` |
-| Skills in the source repo | `init [--agent-skill]`, `create <name> [--from <folder>]`, `vendor <upstream> [--from <copy> --base <rev>]`, `remove <skill>`, `list [--links]` |
-| Work on skills | `edit <skill> [--branch b \| --commit -m … \| --done]`, `use <skill>@<branch> [--local \| --reset]`, `diff <skill> [<from>..<to>]`, `merge <skill>@<branch> [--whole-branch] [--pr]` |
+| Discover (anywhere) | `search <query> [--facet …]`, `info <skill>`, `view <skill> [file]` (prints the file; pipe it to render), `catalog add [--recommended] \| list \| remove \| refresh`, `try <skill> [--to <path> \| --global]`, `untry [skill] [--to \| --global \| --all]` |
+| Skills in the source repo | `init [--agent-skill]`, `create <name> [--from <folder>]`, `vendor <upstream> [--from <copy> --base <rev>]`, `remove <skill>`, `list [--links \| --trials] [--all]` |
+| Work on skills | `edit <skill> [-b <branch>] [--shell \| --commit -m … \| --done]`, `use <skill>@<branch> [--local \| --reset]`, `diff <skill> [<from>..<to>]`, `merge <skill>@<branch> [--whole-branch] [--pr]` |
 | Upstream | `outdated [skill] [--diff]`, `sync [skill] [--dry-run \| --continue \| --abort]`, `contribute <skill>` |
-| Validate | `link [skill] [--to <path> \| --global] [--agents …] [--copy] [--shadow]`, `unlink [skill] [--to \| --global \| --all]`, `lint [--fix] [--strict]` |
+| Validate | `link [skill] [--to <path> \| --global] [--agents …] [--copy] [--shadow]`, `unlink [skill] [--to \| --global \| --all]` (source repo links only), `lint [--fix] [--strict]` |
 | Ship | `publish <target> [--bump …] (--dry-run \| --push \| --pr)` |
 | Maintain | `doctor`, `self-update` |
 | Plumbing (hidden) | `serve --stdio`, `statusline`, `gc` |
@@ -705,6 +710,7 @@ Short-name resolution: `pdf` alone resolves against the current source repo's `t
 | Decision | Rationale | Supersedes (v1 spec) |
 |---|---|---|
 | New Tricks for design time; APM for steady state | APM already covers project dependencies across nine agents; the unmet need is discovery, customization and authoring | Full lifecycle manager |
+| Trials apart from links; experiments always on a branch, checked out in the repo (0.5) | One meaning per list and removal; drafts reachable from the editor and by agents confined to the repo | `unlink`/`list --links` for both (0.4); worktrees in the data directory |
 | Commands named after what people guess (0.4): `info`/`view`, `create`/`remove`/`list`, `try`, `outdated`/`sync`, `merge` for branches | npm, gh, cargo and git precedent; one meaning per verb; `merge` means branches, `sync` means upstream | `show`, `status`, `new`, `merge` for upstream (0.3) |
 | One scope: the source repo; no workstation skill management (0.3) | Installing, updating and pinning skills on a machine is what APM, `npx skills` and plugin marketplaces do; duplicating it diluted the focus and made commands mean different things inside and outside a repo | User-scope installs, update policies and rollback (0.1–0.2) |
 | Build our own; interoperate with APM and `npx skills` | APM is Python without a library API and has no customization model | — |

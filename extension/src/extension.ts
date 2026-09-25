@@ -38,7 +38,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     const st = model.status;
     const updates = st?.source_repo?.skills.filter((s) => s.update_available).length ?? 0;
     const merging = st?.source_repo?.skills.filter((s) => s.merge_in_progress).length ?? 0;
-    const links = st?.links.length ?? 0;
+    const links = (st?.links.length ?? 0) + (st?.trials.length ?? 0);
     const parts: string[] = [];
     if (updates) parts.push(`$(cloud-download) ${updates} upstream`);
     if (merging) parts.push(`$(git-merge) merging`);
@@ -358,7 +358,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   reg("tricks.editOnBranch", async (arg?: unknown) => {
     const name = await pickRepoSkill(arg);
     if (!name) return;
-    const branch = await vscode.window.showInputBox({ prompt: `Branch for experimenting with ${name}`, placeHolder: "e.g. terse-description", value: model.skill(name)?.branches[0] });
+    const branch = await vscode.window.showInputBox({ prompt: `Branch for experimenting with ${name}`, placeHolder: "e.g. terse-description", value: model.skill(name)?.editing ?? `draft/${name}` });
     if (!branch) return;
     const r = await withProgress(`New Tricks: editing ${name} on ${branch}`, () => client.request("sourceRepo/edit", { skill: name, branch }));
     if (!r) return;
@@ -368,7 +368,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   });
 
   reg("tricks.commitDraft", async (arg?: unknown) => {
-    const name = await pickRepoSkill(arg, (s) => !!s.editing && s.editing !== "main checkout");
+    const name = await pickRepoSkill(arg, (s) => !!s.editing);
     if (!name) return;
     const message = await vscode.window.showInputBox({ prompt: `Commit message for the ${name} draft on ${model.skill(name)?.editing ?? "its branch"}` });
     if (!message) return;
@@ -464,13 +464,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   reg("tricks.unlink", async (item?: SkillItem) => {
     const l = item?.data as LinkInfo | undefined;
     if (!l) return;
-    await withProgress("New Tricks: unlinking", () => client.request("unlink", { skill: l.skill, ...(l.scope === "global" ? { global: true } : { to: l.scope }) }));
+    await withProgress("New Tricks: unlinking", () => client.request(l.kind === "trial" ? "untry" : "unlink", { skill: l.skill, ...(l.scope === "global" ? { global: true } : { to: l.scope }) }));
     await refreshAll();
   });
 
   reg("tricks.unlinkAll", async () => {
-    const r = await withProgress("New Tricks: removing links", () => client.request("unlink", { all: true }));
-    if (r) vscode.window.showInformationMessage(`Removed ${r.removed.length} link(s).`);
+    const r = await withProgress("New Tricks: removing links", () => client.request("unlink", {}));
+    if (r) vscode.window.showInformationMessage(`Removed ${r.removed.length} link(s) of this source repo's skills.`);
+    await refreshAll();
+  });
+
+  reg("tricks.untryAll", async () => {
+    const r = await withProgress("New Tricks: removing trials", () => client.request("untry", { all: true }));
+    if (r) vscode.window.showInformationMessage(`Removed ${r.removed.length} trial(s).`);
     await refreshAll();
   });
 
@@ -512,7 +518,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
       { label: "$(cloud-download) Check upstream changes", cmd: "tricks.checkUpstream" },
       { label: "$(checklist) Lint source repo", cmd: "tricks.lint" },
       { label: "$(rocket) Publish…", cmd: "tricks.publish" },
-      { label: "$(debug-disconnect) Remove all links", cmd: "tricks.unlinkAll" },
+      { label: "$(debug-disconnect) Unlink this source repo's skills", cmd: "tricks.unlinkAll" },
+      { label: "$(beaker) Remove all trials", cmd: "tricks.untryAll" },
       { label: "$(pulse) Doctor", cmd: "tricks.doctor" },
       { label: "$(refresh) Refresh", cmd: "tricks.refresh" },
     ];
