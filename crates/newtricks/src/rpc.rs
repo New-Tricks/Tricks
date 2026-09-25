@@ -177,11 +177,16 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
         "catalog/refresh" => to(crate::catalogs::refresh(ctx, true, s(p, "catalog"))?),
         "list" => {
             ws::reconcile(ctx)?;
-            to(crate::cli_repo::list(ctx)?)
+            let mut l = crate::cli_repo::list(ctx, b(p, "all"))?;
+            if b(p, "allTrials") {
+                l.trials = crate::links::trials(ctx, true)?;
+            }
+            to(l)
         }
         "link" => to(crate::links::link(ctx, s(p, "skill"), &link_options(p, &strs(p, "agents")))?),
         "try" => to(crate::links::try_skill(ctx, req(p, "skill")?, &link_options(p, &strs(p, "agents")))?),
         "unlink" => to(crate::links::unlink(ctx, s(p, "skill"), &crate::links::UnlinkOptions { to: s(p, "to"), global: b(p, "global"), all: b(p, "all") })?),
+        "untry" => to(crate::links::untry(ctx, s(p, "skill"), &crate::links::UnlinkOptions { to: s(p, "to"), global: b(p, "global"), all: b(p, "all") })?),
         "agents" => to(crate::agents::AGENTS.iter().map(|a| json!({ "id": a.id, "name": a.display, "userDir": ctx.paths.contract(&a.user_path(&ctx.paths.home)), "projectDir": a.project_dir, "mode": if a.follows_links(&ctx.paths.store()) { "link" } else { "copy" } })).collect::<Vec<_>>()),
         "doctor" => to(crate::doctor::run(ctx)?),
         "sourceRepo/init" => to(ws::init(ctx, s(p, "name"), b(p, "agentSkill"))?),

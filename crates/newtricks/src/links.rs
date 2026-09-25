@@ -232,79 +232,146 @@ pub struct UnlinkReport {
 pub struct UnlinkOptions<'a> {
     pub to: Option<&'a str>,
     pub global: bool,
-    /// Every link, everywhere.
+    /// Every source repo's links (or, for `untry`, every trial), everywhere.
     pub all: bool,
 }
 
-/// Placements made by `link` and `try`.
-const LINKS: &str = "WHERE origin IN ('source-repo','trial','link')";
+/// Placements made by `link` (source repo skills).
+const DEV: &str = "WHERE origin='source-repo'";
+/// Placements made by `try`.
+const TRIALS: &str = "WHERE origin IN ('trial','link')";
 
-/// `tricks unlink [skill]`: remove the links (and trials) of a skill; with no skill, every
-/// link of the current source repo's skills (or everything with `--all`).
-pub fn unlink(ctx: &Ctx, input: Option<&str>, o: &UnlinkOptions) -> Result<UnlinkReport> {
-    let scope = match (o.to, o.global) {
-        (None, false) => None,
-        _ => Some(scope_for(ctx, &LinkOptions { to: o.to, global: o.global, ..Default::default() }, false)?),
-    };
-    let keys: Option<Vec<String>> = match input {
-        Some(i) => Some(vec![target_key(ctx, i).unwrap_or_else(|| i.to_string())]),
-        None if o.all => None,
-        None => match crate::source_repo::current(ctx)? {
-            Some(ws) => Some(ws.manifest.skills.keys().map(|n| ws.skill_key(n)).collect()),
-            None => bail!("name a skill to unlink, run it inside a source repo, or pass --all"),
-        },
-    };
-    let mut removed = Vec::new();
-    for p in ctx.state.placements(LINKS, &[])? {
-        if let Some(s) = &scope
-            && p.scope != s.key()
-        {
-            continue;
-        }
-        if let Some(ks) = &keys {
-            let name_match = |k: &String| Path::new(&p.path).file_name().map(|n| n.to_string_lossy() == k.as_str()).unwrap_or(false);
-            if !ks.iter().any(|k| &p.skill == k || name_match(k)) {
-                continue;
-            }
-        }
-        deploy::remove_placement(ctx, &p)?;
-        removed.push(p.path);
+fn placement_name(p: &crate::state::Placement) -> String {
+    Path::new(&p.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+}
+
+/// Whether a placement is the skill `input` names: its key, its directory name, or an
+/// `owner/repo//name` reference to it (matched without the network).
+fn matches(p: &crate::state::Placement, input: &str) -> bool {
+    if p.skill == input || placement_name(p) == input {
+        return true;
     }
-    if removed.is_empty() && input.is_some() {
-        bail!("no matching links");
+    if let Some((repo, sel)) = input.split_once("//") {
+        let sel = sel.split('@').next().unwrap_or(sel);
+        let repo = if repo.split('/').next().is_some_and(|h| h.contains('.')) { repo.to_string() } else { format!("github.com/{repo}") };
+        let (pr, ppath) = p.skill.split_once("//").unwrap_or(("", ""));
+        return pr.eq_ignore_ascii_case(&repo) && (ppath == sel || ppath.ends_with(&format!("/{sel}")));
+    }
+    false
+}
+
+fn narrowed(ctx: &Ctx, o: &UnlinkOptions) -> Result<Option<String>> {
+    Ok(match (o.to, o.global) {
+        (None, false) => None,
+        _ => Some(scope_for(ctx, &LinkOptions { to: o.to, global: o.global, ..Default::default() }, false)?.key()),
+    })
+}
+
+fn remove(ctx: &Ctx, filter: &str, keep: impl Fn(&crate::state::Placement) -> bool) -> Result<Vec<String>> {
+    let mut removed = Vec::new();
+    for p in ctx.state.placements(filter, &[])? {
+        if keep(&p) {
+            deploy::remove_placement(ctx, &p)?;
+            removed.push(p.path);
+        }
     }
     // The store is a cache: drop what no link needs any more.
     let _ = store::gc(ctx, false);
+    Ok(removed)
+}
+
+/// `tricks unlink [skill]`: remove links of source repo skills — one skill's, or with no
+/// skill all of the current source repo's (`--all`: every source repo's).
+pub fn unlink(ctx: &Ctx, input: Option<&str>, o: &UnlinkOptions) -> Result<UnlinkReport> {
+    let scope = narrowed(ctx, o)?;
+    let ws = crate::source_repo::current(ctx)?;
+    if let Some(i) = input
+        && ctx.state.placements(TRIALS, &[])?.iter().any(|p| matches(p, i))
+        && !ctx.state.placements(DEV, &[])?.iter().any(|p| matches(p, i))
+    {
+        bail!("`{i}` is a trial; remove it with `tricks untry {i}`");
+    }
+    let repo_prefix = match (&ws, input, o.all) {
+        (_, Some(_), _) | (_, None, true) => None,
+        (Some(ws), None, false) => Some(format!("ws:{}//", ws.root.display())),
+        (None, None, false) => bail!("not inside a source repo: name a skill, or pass --all to unlink every source repo's links"),
+    };
+    let key = input.and_then(|i| repo_target(ctx, i).ok().flatten()).map(|t| t.skill);
+    let removed = remove(ctx, DEV, |p| {
+        scope.as_ref().is_none_or(|s| &p.scope == s)
+            && repo_prefix.as_ref().is_none_or(|pre| p.skill.starts_with(pre))
+            && input.is_none_or(|i| key.as_deref() == Some(p.skill.as_str()) || (key.is_none() && matches(p, i)))
+    })?;
+    if let (true, Some(i)) = (removed.is_empty(), input) {
+        bail!("no links of `{i}`");
+    }
+    Ok(UnlinkReport { removed })
+}
+
+/// `tricks untry [skill]`: remove trials — one skill's (wherever it is tried), or with no
+/// skill those in the current project; `--global` / `--to` pick another place, `--all`
+/// removes every trial.
+pub fn untry(ctx: &Ctx, input: Option<&str>, o: &UnlinkOptions) -> Result<UnlinkReport> {
+    if let Some(i) = input
+        && repo_target(ctx, i)?.is_some()
+    {
+        bail!("`{i}` is a skill of this source repo; remove its links with `tricks unlink {i}`");
+    }
+    let scope = match (narrowed(ctx, o)?, input, o.all) {
+        (Some(s), _, _) => Some(s),
+        (None, None, false) => Some(crate::paths::canon(&ctx.opts.cwd)?.to_string_lossy().to_string()),
+        _ => None,
+    };
+    let removed = remove(ctx, TRIALS, |p| scope.as_ref().is_none_or(|s| &p.scope == s) && input.is_none_or(|i| matches(p, i)))?;
+    if let (true, Some(i)) = (removed.is_empty(), input) {
+        bail!("`{i}` is not being tried");
+    }
     Ok(UnlinkReport { removed })
 }
 
 #[derive(Debug, Serialize)]
 pub struct LinkInfo {
     pub skill: String,
+    /// The skill's directory name in the agent directory.
+    pub name: String,
     pub agent: String,
+    /// `global` (user-level agent directories) or a project path
     pub scope: String,
     pub path: String,
     pub mode: String,
-    /// dev (a source repo skill) | trial (`tricks try`)
+    /// dev (a source repo skill, `link`) | trial (`try`)
     pub kind: String,
     /// ok | missing | replaced | target-missing | project-missing | drifted
     pub health: String,
 }
 
-/// Active links, for `status`.
-pub fn list(ctx: &Ctx) -> Result<Vec<LinkInfo>> {
+fn info(p: crate::state::Placement) -> LinkInfo {
+    LinkInfo {
+        health: deploy::health(&p),
+        kind: if p.origin == "source-repo" { "dev".into() } else { "trial".into() },
+        name: placement_name(&p),
+        skill: p.skill,
+        agent: p.agent,
+        scope: p.scope,
+        path: p.path,
+        mode: p.mode,
+    }
+}
+
+/// Links of source repo skills: those of `repo`, or of every source repo.
+pub fn dev_links(ctx: &Ctx, repo: Option<&crate::source_repo::SourceRepo>) -> Result<Vec<LinkInfo>> {
+    let prefix = repo.map(|ws| format!("ws:{}//", ws.root.display()));
     Ok(ctx
         .state
-        .placements(LINKS, &[])?
+        .placements(DEV, &[])?
         .into_iter()
-        .map(|p| LinkInfo {
-            health: deploy::health(&p),
-            kind: if p.origin == "source-repo" { "dev".into() } else { "trial".into() },
-            skill: p.skill,
-            agent: p.agent,
-            scope: p.scope,
-            path: p.path,
-            mode: p.mode,
-        })
+        .filter(|p| prefix.as_ref().is_none_or(|pre| p.skill.starts_with(pre)))
+        .map(info)
         .collect())
+}
+
+/// Trials: in the current project and at user level, or (`all`) everywhere.
+pub fn trials(ctx: &Ctx, all: bool) -> Result<Vec<LinkInfo>> {
+    let here = crate::paths::canon(&ctx.opts.cwd).map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    Ok(ctx.state.placements(TRIALS, &[])?.into_iter().filter(|p| all || p.scope == "global" || p.scope == here).map(info).collect())
 }

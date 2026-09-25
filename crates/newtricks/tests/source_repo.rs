@@ -215,10 +215,31 @@ fn branch_experiments_and_variants() {
         &["create", "greeter", "--description", "Writes greetings for any occasion. Use when the user asks for a greeting card text."],
     );
     commit_all(&ws, "new greeter");
-    // --commit only commits drafts on a branch, never on the main checkout.
-    s.ok_in(&ws, &["edit", "greeter"]);
+    // --commit needs an experiment under way.
     let err = s.fail_in(&ws, &["edit", "greeter", "--commit", "-m", "x"]);
-    assert!(err.contains("not being edited on a branch"), "{err}");
+    assert!(err.contains("not being edited"), "{err}");
+    // Without -b, edit starts (or continues) draft/<skill>, checked out inside the repo.
+    let d = s.json_in(&ws, &["edit", "greeter"]);
+    assert_eq!(d["branch"], "draft/greeter", "{d}");
+    assert!(PathBuf::from(d["path"].as_str().unwrap()).starts_with(ws.join(".tricks/work")), "{d}");
+    assert!(read(&ws.join(".gitignore")).contains("/.tricks/"));
+    assert!(git(&ws, &["status", "--porcelain"]).is_empty(), "worktrees are ignored (init added /.tricks/)");
+    // `cd "$(tricks edit greeter)"`: stdout is just the path; commands inside it act on the repo.
+    let path = s.ok_in(&ws, &["edit", "greeter"]);
+    assert_eq!(path.trim(), d["path"].as_str().unwrap());
+    let inside = s.json_in(Path::new(path.trim()), &["list"]);
+    assert_eq!(inside["source_repo"]["root"], ws.to_str().unwrap(), "{inside}");
+    s.ok_in(&ws, &["edit", "greeter", "--done"]);
+    // --shell runs $SHELL in the draft.
+    let fake = s.root().join("fake-shell.sh");
+    let out = s.root().join("shell-out.txt");
+    std::fs::write(&fake, format!("#!/bin/sh\npwd > {}\necho \"$TRICKS_EDITING\" >> {}\n", out.display(), out.display())).unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut s = s;
+    s.env.push(("SHELL".into(), fake.to_string_lossy().into()));
+    s.ok_in(&ws, &["edit", "greeter", "--shell"]);
+    let recorded = read(&out);
+    assert!(recorded.contains(".tricks/work/draft--greeter/skills/greeter") && recorded.contains("greeter@draft/greeter"), "{recorded}");
     s.ok_in(&ws, &["edit", "greeter", "--done"]);
     s.ok_in(&ws, &["link", "--agents", "claude"]);
     let deployed = s.home.join(".claude/skills/greeter");

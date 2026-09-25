@@ -87,7 +87,9 @@ fn serve_stdio_roundtrip() {
     assert_eq!(r["result"]["items"][0]["state"], "up-to-date", "{r}");
     let r = call(7, "list", json!({}));
     assert_eq!(r["result"]["source_repo"]["skills"][0]["name"], "secret", "{r}");
-    assert_eq!(r["result"]["links"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["result"]["trials"].as_array().unwrap().len(), 0, "a trial in another project: {r}");
+    let r = call(9, "list", json!({"allTrials": true}));
+    assert_eq!(r["result"]["trials"].as_array().unwrap().len(), 1, "{r}");
     let r = call(8, "nope", json!({}));
     assert_eq!(r["error"]["code"], -32000);
     send(&mut stdin, &json!({"jsonrpc":"2.0","method":"exit"}));
