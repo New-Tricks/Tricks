@@ -84,7 +84,7 @@ pub fn newer(ctx: &Ctx, locked: &LockedSkill, refresh: bool) -> Result<Option<(S
         Some(Kind::WellKnown) => {
             if refresh {
                 let (origin, _) = crate::wellknown::lookup(ctx, &locked.id)?;
-                let _ = crate::sources::refresh(ctx, false, Some(&origin));
+                let _ = crate::catalogs::refresh(ctx, false, Some(&origin));
             }
             let (_, entry) = crate::wellknown::lookup(ctx, &locked.id)?;
             Ok(entry.digest.filter(|d| d != &locked.commit).map(|d| (d.trim_start_matches("sha256:").chars().take(12).collect(), d)))

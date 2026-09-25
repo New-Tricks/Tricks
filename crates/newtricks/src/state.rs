@@ -54,7 +54,7 @@ pub fn now() -> i64 {
 pub struct Placement {
     pub id: i64,
     pub skill: String,
-    /// `workbench` (installed via add/install), `link` (test deployment), `workspace` (dev link)
+    /// `user` (installed via add/install), `link` (test deployment), `source-repo` (dev link)
     pub origin: String,
     pub agent: String,
     /// `global` or an absolute project path

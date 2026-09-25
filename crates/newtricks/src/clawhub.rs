@@ -166,7 +166,7 @@ pub fn query(gh: &GitHub, q: &str, limit: usize, emit: &mut dyn FnMut(Found)) ->
     // Fetch native details while the mirrors' repositories are fetched.
     let details = std::thread::scope(|s| {
         let h = s.spawn(|| {
-            crate::sources::parallel_map(natives, MAX_NATIVE, |(o, s)| {
+            crate::catalogs::parallel_map(natives, MAX_NATIVE, |(o, s)| {
                 let d = detail(gh, &o, &s, None);
                 (o, s, d)
             })

@@ -1,6 +1,6 @@
 [package]
 name = "newtricks"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "New Tricks: teach your agents new tricks. The design-time workbench for agent skills: federated search, customization with upstream merges, branch experiments, lint and publish."
 license = "Apache-2.0"

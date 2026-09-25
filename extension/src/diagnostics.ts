@@ -22,7 +22,7 @@ export class LintDiagnostics implements vscode.Disposable {
   async run(fix = false): Promise<{ errors: number; warnings: number; fixed: string[] } | undefined> {
     let r: any;
     try {
-      r = await this.client.request("workspace/lint", { fix }, { confirm: false });
+      r = await this.client.request("sourceRepo/lint", { fix }, { confirm: false });
     } catch {
       this.collection.clear();
       return undefined;

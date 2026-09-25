@@ -1,6 +1,6 @@
 # New Tricks
 
-**Teach your agents new tricks.** New Tricks (`tricks`) is the design-time workbench for agent skills. Find skills across fragmented indexes, try them against real agents, customize them while still receiving upstream improvements, author your own, and publish a repository that APM, `npx skills`, Claude plugin marketplaces, Copilot, Codex and Cursor can all install.
+**Teach your agents new tricks.** New Tricks (`tricks`) is the design-time workbench for agent skills. Find skills across fragmented catalogs, try them against real agents, customize them while still receiving upstream improvements, author your own, and publish a repository that APM, `npx skills`, Claude plugin marketplaces, Copilot, Codex and Cursor can all install.
 
 Projects keep committing `apm.yml` and installing with [APM](https://github.com/microsoft/apm). New Tricks is what you use *before* that — see [SPEC.md](SPEC.md) for the full design.
 
@@ -44,10 +44,10 @@ tricks unlink --all
 ### Author and customize
 
 ```bash
-cd ~/code/my-skills && tricks init                    # any git repo becomes a workspace
+cd ~/code/my-skills && tricks init                    # any git repo becomes a source repo
 tricks vendor anthropics/skills//skill-creator        # copy upstream in, record its base
 tricks new changelog-writer --description "Writes release notes… Use when …"
-tricks install                                        # dev-link workspace skills: edits are live
+tricks install                                        # dev-link source repo skills: edits are live
 
 tricks edit changelog-writer --branch terse           # worktree experiment, agents load the draft
 tricks commit changelog-writer -m "Terser output"
@@ -65,13 +65,13 @@ tricks pr skill-creator                               # send your change upstrea
 ```toml
 # tricks.toml
 [publish.targets.public]
-repo    = "../my-skills-public"      # local checkout of the distribution repository
+repo    = "acme/my-skills-public"    # distribution repository: owner/repo, a git URL or a path
 exclude = ["evals/**", "notes/**"]
 ```
 
 ```bash
 tricks publish public --dry-run
-tricks publish public --bump minor [--push | --pr]
+tricks publish public --bump minor --push   # or --pr for a reviewed pull request
 ```
 
 The target gets `skills/<name>/`, a Claude `marketplace.json`, `apm.yml`, `PROVENANCE.md` and `CHANGELOG.md`, and is tagged `vX.Y.Z`. Gates: committed source, zero lint errors, licence policy for vendored skills, leak check, risk diff.
@@ -91,10 +91,10 @@ https://github.com/anthropics/skills/tree/main/skills/pdf
 
 | File | Purpose |
 |---|---|
-| `~/.config/newtricks/tricks.toml` | Workbench: settings, sources, installed skills, registered workspaces |
+| `~/.config/newtricks/tricks.toml` | User config: settings, catalogs, user-scope installs, registered source repos |
 | `~/.config/newtricks/tricks.lock` | Resolved commits and tree hashes |
-| `<workspace>/tricks.toml` / `.lock` | Workspace skills, upstreams, lint config, publish targets / recorded bases |
-| `<workspace>/tricks.work.toml` | Machine-local variant overrides (gitignored) |
+| `<source-repo>/tricks.toml` / `.lock` | Source repo skills, upstreams, lint config, publish targets / recorded bases |
+| `<source-repo>/tricks.work.toml` | Machine-local variant overrides (gitignored) |
 
 Data (store, mirrors, worktrees, `state.db`) lives in `~/Library/Application Support/newtricks` (macOS), `$XDG_DATA_HOME/newtricks` (Linux) or `%LOCALAPPDATA%\newtricks` (Windows).
 

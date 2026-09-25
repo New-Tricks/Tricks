@@ -7,7 +7,7 @@ import { SCHEME, SkillDocumentProvider, remoteUri, versionUri } from "./docs";
 import { Model } from "./model";
 import { PublishPanel } from "./publish";
 import { FrontmatterAssist } from "./frontmatter";
-import { InstalledTree, SkillItem, WorkspaceTree } from "./trees";
+import { InstalledTree, SkillItem, SourceRepoTree } from "./trees";
 
 const AGENTS = [
   { id: "claude", label: "Claude Code" },
@@ -28,7 +28,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, docs),
     vscode.window.registerWebviewViewProvider(DiscoverView.id, discover, { webviewOptions: { retainContextWhenHidden: true } }),
-    vscode.window.registerTreeDataProvider("tricks.workspace", new WorkspaceTree(model)),
+    vscode.window.registerTreeDataProvider("tricks.sourceRepo", new SourceRepoTree(model)),
     vscode.window.registerTreeDataProvider("tricks.installed", new InstalledTree(model)),
     vscode.languages.registerCompletionItemProvider({ language: "markdown", pattern: "**/SKILL.md" }, new FrontmatterAssist(), ":"),
     vscode.languages.registerHoverProvider({ language: "markdown", pattern: "**/SKILL.md" }, new FrontmatterAssist()),
@@ -36,9 +36,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
 
   const renderStatus = () => {
     const st = model.status;
-    const updates = (st?.workbench.updates_ready ?? 0) + (st?.workspace?.skills.filter((s) => s.update_available).length ?? 0);
-    const merging = st?.workspace?.skills.filter((s) => s.merge_in_progress).length ?? 0;
-    const links = st?.workbench.links.length ?? 0;
+    const updates = (st?.user.updates_ready ?? 0) + (st?.source_repo?.skills.filter((s) => s.update_available).length ?? 0);
+    const merging = st?.source_repo?.skills.filter((s) => s.merge_in_progress).length ?? 0;
+    const links = st?.user.links.length ?? 0;
     const parts: string[] = [];
     if (updates) parts.push(`$(sync) ${updates} update${updates > 1 ? "s" : ""}`);
     if (merging) parts.push(`$(git-merge) merging`);
@@ -53,15 +53,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
 
   const refreshAll = async () => {
     await model.refresh();
-    if (model.status?.workspace) await lint.run();
+    if (model.status?.source_repo) await lint.run();
     renderStatus();
   };
 
   // Periodic update check while VS Code is open (fetches are throttled by the core).
   const check = async () => {
     try {
-      await client.request("workbench/outdated", {}, { confirm: false });
-      if (model.status?.workspace) await client.request("workspace/outdated", {}, { confirm: false });
+      await client.request("user/outdated", {}, { confirm: false });
+      if (model.status?.source_repo) await client.request("sourceRepo/outdated", {}, { confirm: false });
     } catch (e) {
       client.output.appendLine(`update check failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -72,11 +72,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
   setTimeout(check, 5_000);
 
-  // Re-lint on save of workspace skill files.
+  // Re-lint on save of source repo skill files.
   let lintTimer: NodeJS.Timeout | undefined;
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((d) => {
-      const ws = model.status?.workspace;
+      const ws = model.status?.source_repo;
       if (!ws || !d.uri.fsPath.startsWith(ws.root)) return;
       clearTimeout(lintTimer);
       lintTimer = setTimeout(async () => {
@@ -91,14 +91,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     if (typeof arg === "string") return arg;
     return undefined;
   };
-  const pickWsSkill = async (arg: unknown, filter?: (s: any) => boolean): Promise<string | undefined> => {
+  const pickRepoSkill = async (arg: unknown, filter?: (s: any) => boolean): Promise<string | undefined> => {
     const n = skillName(arg);
     if (n) return n;
-    const skills = (model.status?.workspace?.skills ?? []).filter(filter ?? (() => true));
+    const skills = (model.status?.source_repo?.skills ?? []).filter(filter ?? (() => true));
     const pick = await vscode.window.showQuickPick(skills.map((s) => ({ label: s.name, description: s.upstream ?? "local original" })), { placeHolder: "Skill" });
     return pick?.label;
   };
-  const wsRoot = () => model.status?.workspace?.root;
+  const wsRoot = () => model.status?.source_repo?.root;
   const openSkillMd = async (dir: string) => {
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(dir, "SKILL.md")));
     await vscode.window.showTextDocument(doc);
@@ -154,20 +154,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     if (!skill) return;
     const agents = await pickAgents();
     if (!agents?.length) return;
-    const r = await withProgress(`New Tricks: installing ${skill}`, () => client.request("workbench/add", { skill, agents }));
+    const r = await withProgress(`New Tricks: installing ${skill}`, () => client.request("user/add", { skill, agents }));
     if (r) vscode.window.showInformationMessage(`Installed ${r.name} for ${r.agents.join(", ")}${r.risk.length ? ` — ${r.risk.join("; ")}` : ""}`);
     await refreshAll();
   });
 
   reg("tricks.vendor", async (id?: string) => {
     if (!wsRoot()) {
-      const init = await vscode.window.showWarningMessage("Vendoring needs a New Tricks workspace in this folder.", "Initialize Workspace");
-      if (init) await vscode.commands.executeCommand("tricks.initWorkspace");
+      const init = await vscode.window.showWarningMessage("Vendoring needs a New Tricks source repo in this folder.", "Initialize Source Repo");
+      if (init) await vscode.commands.executeCommand("tricks.initSourceRepo");
       if (!wsRoot()) return;
     }
     const skill = id ?? (await vscode.window.showInputBox({ prompt: "Upstream skill to vendor (owner/repo//name)" }));
     if (!skill) return;
-    const r = await withProgress(`New Tricks: vendoring ${skill}`, () => client.request("workspace/vendor", { skill }));
+    const r = await withProgress(`New Tricks: vendoring ${skill}`, () => client.request("sourceRepo/vendor", { skill }));
     if (!r) return;
     await refreshAll();
     await openSkillMd(path.join(wsRoot()!, r.path));
@@ -176,17 +176,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
 
   reg("tricks.remove", async (item?: SkillItem) => {
     if (!item) return;
-    const ok = await vscode.window.showWarningMessage(`Remove ${item.label} from the workbench?`, { modal: true }, "Remove");
+    const ok = await vscode.window.showWarningMessage(`Remove ${item.label} from your user skills?`, { modal: true }, "Remove");
     if (!ok) return;
-    await withProgress("New Tricks: removing", () => client.request("workbench/remove", { skill: item.skillName }));
+    await withProgress("New Tricks: removing", () => client.request("user/remove", { skill: item.skillName }));
     await refreshAll();
   });
 
-  reg("tricks.workbenchUpdate", async () => {
-    const r = await withProgress("New Tricks: checking for updates", () => client.request("workbench/outdated", {}, { confirm: false }));
+  reg("tricks.userUpdate", async () => {
+    const r = await withProgress("New Tricks: checking for updates", () => client.request("user/outdated", {}, { confirm: false }));
     if (!r) return;
     if (!r.pending.length) {
-      vscode.window.showInformationMessage("All workbench skills are up to date.");
+      vscode.window.showInformationMessage("All user skills are up to date.");
       return;
     }
     const pendingItems: (vscode.QuickPickItem & { id: string })[] = r.pending.map((p: any) => ({ label: p.name, description: `${p.from_ref} → ${p.to_ref}`, detail: p.details.slice(0, 4).join(" · "), id: p.id }));
@@ -195,21 +195,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
       { canPickMany: true, placeHolder: "Apply which updates? (you will see the risk summary for each)" },
     );
     for (const p of picks ?? []) {
-      await withProgress(`New Tricks: updating ${p.label}`, () => client.request("workbench/update", { skill: p.id }));
+      await withProgress(`New Tricks: updating ${p.label}`, () => client.request("user/update", { skill: p.id }));
     }
     await refreshAll();
   });
 
   reg("tricks.rollback", async (item?: SkillItem) => {
     if (!item) return;
-    const r = await withProgress("New Tricks: rolling back", () => client.request("workbench/rollback", { skill: item.skillName }));
+    const r = await withProgress("New Tricks: rolling back", () => client.request("user/rollback", { skill: item.skillName }));
     if (r) vscode.window.showInformationMessage(`Rolled back ${item.label} and pinned it.`);
     await refreshAll();
   });
 
-  reg("tricks.initWorkspace", async () => {
-    const r = await withProgress("New Tricks: initializing workspace", () => client.request("workspace/init", {}));
-    if (r) vscode.window.showInformationMessage(`${r.created ? "Created" : "Registered"} workspace ${r.name}`);
+  reg("tricks.initSourceRepo", async () => {
+    const r = await withProgress("New Tricks: initializing source repo", () => client.request("sourceRepo/init", {}));
+    if (r) vscode.window.showInformationMessage(`${r.created ? "Created" : "Registered"} source repo ${r.name}`);
     await client.restart();
     await refreshAll();
   });
@@ -218,7 +218,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     const name = await vscode.window.showInputBox({ prompt: "Skill name (lowercase-with-hyphens)", validateInput: (v) => (/^[a-z0-9]+(-[a-z0-9]+)*$/.test(v) && v.length <= 64 ? undefined : "lowercase letters, digits and single hyphens") });
     if (!name) return;
     const description = await vscode.window.showInputBox({ prompt: "Description: what it does and when to use it", placeHolder: "Extracts … Use when the user asks …" });
-    const r = await withProgress("New Tricks: creating skill", () => client.request("workspace/new", { name, description: description || undefined }));
+    const r = await withProgress("New Tricks: creating skill", () => client.request("sourceRepo/new", { name, description: description || undefined }));
     if (!r) return;
     await refreshAll();
     await openSkillMd(path.join(wsRoot()!, r.path));
@@ -243,7 +243,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   });
 
   reg("tricks.changes", async (arg?: unknown) => {
-    const name = await pickWsSkill(arg);
+    const name = await pickRepoSkill(arg);
     if (!name) return;
     const s = model.skill(name);
     const views = [
@@ -254,7 +254,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     ].filter((v) => s?.upstream || v.from === "head");
     const view = await vscode.window.showQuickPick(views, { placeHolder: `Changes in ${name}` });
     if (!view) return;
-    const r = await withProgress("New Tricks: comparing", () => client.request("workspace/changedFiles", { skill: name, from: view.from, to: view.to }, { confirm: false }));
+    const r = await withProgress("New Tricks: comparing", () => client.request("sourceRepo/changedFiles", { skill: name, from: view.from, to: view.to }, { confirm: false }));
     if (!r) return;
     if (!r.files.length) {
       vscode.window.showInformationMessage(`No differences (${view.description}).`);
@@ -270,7 +270,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   });
 
   const openConflicts = async (name: string, conflicts: { path: string; kind: string }[]) => {
-    const st = await client.request("workspace/mergeState", { skill: name }, { confirm: false });
+    const st = await client.request("sourceRepo/mergeState", { skill: name }, { confirm: false });
     for (const c of conflicts) {
       const output = vscode.Uri.file(path.join(st.skillDir, c.path));
       if (c.kind !== "text" && c.kind !== "added-both") {
@@ -291,9 +291,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   };
 
   reg("tricks.update", async (arg?: unknown) => {
-    const name = await pickWsSkill(arg, (s) => !!s.upstream);
+    const name = await pickRepoSkill(arg, (s) => !!s.upstream);
     if (!name) return;
-    const r = await withProgress(`New Tricks: merging upstream into ${name}`, () => client.request("workspace/update", { skill: name }));
+    const r = await withProgress(`New Tricks: merging upstream into ${name}`, () => client.request("sourceRepo/update", { skill: name }));
     if (!r) return;
     const it = r.items[0];
     await refreshAll();
@@ -315,26 +315,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   });
 
   reg("tricks.updateContinue", async (arg?: unknown) => {
-    const name = await pickWsSkill(arg, (s) => s.merge_in_progress);
+    const name = await pickRepoSkill(arg, (s) => s.merge_in_progress);
     if (!name) return;
-    const r = await withProgress("New Tricks: completing merge", () => client.request("workspace/update", { skill: name, continue: true }));
+    const r = await withProgress("New Tricks: completing merge", () => client.request("sourceRepo/update", { skill: name, continue: true }));
     if (r) vscode.window.showInformationMessage(`${name}: merge completed (uncommitted). Review and commit.`);
     await refreshAll();
   });
 
   reg("tricks.updateAbort", async (arg?: unknown) => {
-    const name = await pickWsSkill(arg, (s) => s.merge_in_progress);
+    const name = await pickRepoSkill(arg, (s) => s.merge_in_progress);
     if (!name) return;
-    await withProgress("New Tricks: aborting merge", () => client.request("workspace/update", { skill: name, abort: true }));
+    await withProgress("New Tricks: aborting merge", () => client.request("sourceRepo/update", { skill: name, abort: true }));
     await refreshAll();
   });
 
   reg("tricks.editOnBranch", async (arg?: unknown) => {
-    const name = await pickWsSkill(arg);
+    const name = await pickRepoSkill(arg);
     if (!name) return;
     const branch = await vscode.window.showInputBox({ prompt: `Branch for experimenting with ${name}`, placeHolder: "e.g. terse-description", value: model.skill(name)?.branches[0] });
     if (!branch) return;
-    const r = await withProgress(`New Tricks: editing ${name} on ${branch}`, () => client.request("workspace/edit", { skill: name, branch }));
+    const r = await withProgress(`New Tricks: editing ${name} on ${branch}`, () => client.request("sourceRepo/edit", { skill: name, branch }));
     if (!r) return;
     await refreshAll();
     await openSkillMd(r.path);
@@ -342,17 +342,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   });
 
   reg("tricks.commit", async (arg?: unknown) => {
-    const name = await pickWsSkill(arg);
+    const name = await pickRepoSkill(arg);
     if (!name) return;
     const message = await vscode.window.showInputBox({ prompt: `Commit message for ${name}` });
     if (!message) return;
-    const r = await withProgress(`New Tricks: committing ${name}`, () => client.request("workspace/commit", { skill: name, message }));
+    const r = await withProgress(`New Tricks: committing ${name}`, () => client.request("sourceRepo/commit", { skill: name, message }));
     if (r) vscode.window.showInformationMessage(r.commit ? `Committed ${name} (${String(r.commit).slice(0, 9)})${r.branch ? ` on ${r.branch}` : ""}` : `No changes to commit for ${name}`);
     await refreshAll();
   });
 
   reg("tricks.useVariant", async (arg?: unknown, branch?: string) => {
-    const name = await pickWsSkill(arg);
+    const name = await pickRepoSkill(arg);
     if (!name) return;
     const s = model.skill(name);
     let b = branch;
@@ -369,12 +369,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
       { placeHolder: "Where should this choice apply?" },
     );
     if (!scope) return;
-    await withProgress(`New Tricks: using ${name}@${b}`, () => client.request("workspace/use", { spec: `${name}@${b}`, local: scope.local }));
+    await withProgress(`New Tricks: using ${name}@${b}`, () => client.request("sourceRepo/use", { spec: `${name}@${b}`, local: scope.local }));
     await refreshAll();
   });
 
   reg("tricks.linkToProject", async (arg?: unknown) => {
-    const name = await pickWsSkill(arg);
+    const name = await pickRepoSkill(arg);
     if (!name) return;
     const folder = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, openLabel: "Link into this project" });
     if (!folder?.[0]) return;
@@ -404,7 +404,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   });
 
   reg("tricks.publish", async () => {
-    const targets = model.status?.workspace?.targets ?? [];
+    const targets = model.status?.source_repo?.targets ?? [];
     if (!targets.length) {
       vscode.window.showWarningMessage("No publish targets. Add [publish.targets.<name>] to tricks.toml.");
       return;
@@ -415,7 +415,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   });
 
   reg("tricks.pr", async (arg?: unknown) => {
-    const name = await pickWsSkill(arg, (s) => !!s.upstream);
+    const name = await pickRepoSkill(arg, (s) => !!s.upstream);
     if (!name) return;
     const title = await vscode.window.showInputBox({ prompt: "Pull request title", value: `Improve ${name} skill` });
     if (!title) return;
@@ -436,9 +436,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
 
   reg("tricks.statusActions", async () => {
     const items = [
-      { label: "$(sync) Review workbench updates", cmd: "tricks.workbenchUpdate" },
+      { label: "$(sync) Review user skill updates", cmd: "tricks.userUpdate" },
       { label: "$(search) Search skills", cmd: "tricks.search" },
-      { label: "$(checklist) Lint workspace", cmd: "tricks.lint" },
+      { label: "$(checklist) Lint source repo", cmd: "tricks.lint" },
       { label: "$(rocket) Publish…", cmd: "tricks.publish" },
       { label: "$(link) Remove all test links", cmd: "tricks.unlinkAll" },
       { label: "$(pulse) Doctor", cmd: "tricks.doctor" },

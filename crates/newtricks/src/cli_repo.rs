@@ -1,22 +1,22 @@
-//! Workspace, experiment and publish commands.
+//! SourceRepo, experiment and publish commands.
 
 use crate::cli::{emit, short};
 use crate::ctx::Ctx;
-use crate::workspace::{self, WsInstallReport, WsStatus, WsUpdateReport};
+use crate::source_repo::{self, RepoInstallReport, RepoStatus, RepoUpdateReport};
 use anyhow::{Result, bail};
 use clap::Subcommand;
 
 #[derive(Subcommand)]
-pub enum WsCmd {
-    /// Make the current git repository a skills workspace
+pub enum RepoCmd {
+    /// Make the current git repository a source repo
     Init {
         #[arg(long)]
         name: Option<String>,
-        /// Also install the bundled `tricks` agent skill
+        /// Also install the bundled `new-tricks` agent skill into this repository (project scope)
         #[arg(long)]
         agent_skill: bool,
     },
-    /// Copy an upstream skill into the workspace to customize it
+    /// Copy an upstream skill into the source repo to customize it
     Vendor {
         skill: String,
         #[arg(long)]
@@ -42,7 +42,7 @@ pub enum WsCmd {
         #[arg(long)]
         description: Option<String>,
     },
-    /// Lint workspace skills (or a skill directory)
+    /// Lint source repo skills (or a skill directory)
     Lint {
         skills: Vec<String>,
         #[arg(long)]
@@ -73,7 +73,7 @@ pub enum WsCmd {
         #[arg(long)]
         reset: bool,
     },
-    /// Show changes between versions of a workspace skill
+    /// Show changes between versions of a source repo skill
     Diff {
         skill: String,
         /// base | upstream | head | working | candidate (the merge result, not yet applied)
@@ -92,7 +92,7 @@ pub enum WsCmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Publish workspace skills to a distribution repository
+    /// Publish source repo skills to a distribution repository
     Publish {
         target: String,
         /// major | minor | patch | <version>
@@ -109,17 +109,17 @@ pub enum WsCmd {
     },
     /// Allow publishing a vendored skill whose licence would block it (requires a reason)
     AllowLicense { skill: String, justification: String },
-    /// List registered workspaces
-    Workspaces,
+    /// List registered source repos
+    SourceRepos,
 }
 
-pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
+pub fn run(ctx: &Ctx, c: RepoCmd) -> Result<()> {
     let json = ctx.opts.json;
     match c {
-        WsCmd::Init { name, agent_skill } => {
-            let r = workspace::init(ctx, name.as_deref(), agent_skill)?;
+        RepoCmd::Init { name, agent_skill } => {
+            let r = source_repo::init(ctx, name.as_deref(), agent_skill)?;
             emit(json, &r, |r| {
-                println!("{} workspace `{}` at {}", if r.created { "created" } else { "registered" }, r.name, r.root);
+                println!("{} source repo `{}` at {}", if r.created { "created" } else { "registered" }, r.name, r.root);
                 for p in &r.agent_skill {
                     println!("  agent skill → {p}");
                 }
@@ -128,24 +128,24 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                 }
             });
         }
-        WsCmd::Vendor { skill, name, path } => {
-            let ws = workspace::require(ctx)?;
-            let r = workspace::vendor(ctx, &ws, &skill, name.as_deref(), path.as_deref())?;
+        RepoCmd::Vendor { skill, name, path } => {
+            let ws = source_repo::require(ctx)?;
+            let r = source_repo::vendor(ctx, &ws, &skill, name.as_deref(), path.as_deref())?;
             emit(json, &r, print_vendor);
         }
-        WsCmd::Import { folder, name, upstream, base } => {
-            let ws = workspace::require(ctx)?;
-            let r = workspace::import(ctx, &ws, &folder, name.as_deref(), upstream.as_deref(), base.as_deref())?;
+        RepoCmd::Import { folder, name, upstream, base } => {
+            let ws = source_repo::require(ctx)?;
+            let r = source_repo::import(ctx, &ws, &folder, name.as_deref(), upstream.as_deref(), base.as_deref())?;
             emit(json, &r, print_vendor);
         }
-        WsCmd::New { name, description } => {
-            let ws = workspace::require(ctx)?;
-            let r = workspace::new_skill(&ws, &name, description.as_deref())?;
+        RepoCmd::New { name, description } => {
+            let ws = source_repo::require(ctx)?;
+            let r = source_repo::new_skill(&ws, &name, description.as_deref())?;
             emit(json, &r, |r| println!("created {} — edit {}/SKILL.md", r.name, r.path));
         }
-        WsCmd::Lint { skills, fix, strict } => {
+        RepoCmd::Lint { skills, fix, strict } => {
             let one_path = skills.len() == 1 && std::path::Path::new(&skills[0]).join("SKILL.md").is_file();
-            let ws = workspace::current(ctx)?;
+            let ws = source_repo::current(ctx)?;
             let mut rep = match (&ws, one_path) {
                 (Some(ws), false) => {
                     if fix {
@@ -155,15 +155,15 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                                 fixed.extend(crate::lint::fix_dir(&ws.root.join(&s.path))?.into_iter().map(|f| format!("{n}/{f}")));
                             }
                         }
-                        let mut r = crate::lint::lint_workspace_opts(ctx, ws, &skills, strict)?;
+                        let mut r = crate::lint::lint_repo_opts(ctx, ws, &skills, strict)?;
                         r.fixed = fixed;
                         r
                     } else {
-                        crate::lint::lint_workspace_opts(ctx, ws, &skills, strict)?
+                        crate::lint::lint_repo_opts(ctx, ws, &skills, strict)?
                     }
                 }
                 _ => {
-                    let Some(p) = skills.first() else { bail!("not in a workspace: pass a skill directory") };
+                    let Some(p) = skills.first() else { bail!("not in a source repo: pass a skill directory") };
                     let dir = ctx.opts.cwd.join(p);
                     let fixed = if fix { crate::lint::fix_dir(&dir)? } else { vec![] };
                     let mut r = crate::lint::lint_path(&dir, strict);
@@ -187,11 +187,11 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        WsCmd::Edit { skill, branch } => {
-            let r = workspace::edit(ctx, &skill, branch.as_deref())?;
+        RepoCmd::Edit { skill, branch } => {
+            let r = source_repo::edit(ctx, &skill, branch.as_deref())?;
             emit(json, &r, |r| {
                 if r.vendored {
-                    println!("vendored {} into the workspace", r.name);
+                    println!("vendored {} into the source repo", r.name);
                 }
                 println!("{}", r.path);
                 if let Some(b) = &r.branch {
@@ -202,8 +202,8 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                 }
             });
         }
-        WsCmd::Commit { skill, message } => {
-            let r = workspace::commit(ctx, &skill, &message)?;
+        RepoCmd::Commit { skill, message } => {
+            let r = source_repo::commit(ctx, &skill, &message)?;
             emit(json, &r, |r| {
                 match &r.commit {
                     Some(c) => {
@@ -216,8 +216,8 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                 }
             });
         }
-        WsCmd::Use { spec, local, reset } => {
-            let r = workspace::use_variant(ctx, &spec, local, reset)?;
+        RepoCmd::Use { spec, local, reset } => {
+            let r = source_repo::use_variant(ctx, &spec, local, reset)?;
             emit(json, &r, |r| {
                 println!(
                     "{} now uses {}{}",
@@ -230,13 +230,13 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                 }
             });
         }
-        WsCmd::Diff { skill, from, to } => {
-            let ws = workspace::require(ctx)?;
-            let files = workspace::changed_files(ctx, &ws, &skill, &from, &to)?;
+        RepoCmd::Diff { skill, from, to } => {
+            let ws = source_repo::require(ctx)?;
+            let files = source_repo::changed_files(ctx, &ws, &skill, &from, &to)?;
             let mut out = Vec::new();
             for f in &files {
-                let a = workspace::version_file(ctx, &ws, &skill, &from, f)?.unwrap_or_default();
-                let b = workspace::version_file(ctx, &ws, &skill, &to, f)?.unwrap_or_default();
+                let a = source_repo::version_file(ctx, &ws, &skill, &from, f)?.unwrap_or_default();
+                let b = source_repo::version_file(ctx, &ws, &skill, &to, f)?.unwrap_or_default();
                 let (sa, sb) = (String::from_utf8_lossy(&a), String::from_utf8_lossy(&b));
                 let d = similar::TextDiff::from_lines(sa.as_ref(), sb.as_ref());
                 out.push((f.clone(), d.unified_diff().header(&format!("{from}/{f}"), &format!("{to}/{f}")).to_string()));
@@ -250,7 +250,7 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                 }
             });
         }
-        WsCmd::Pr { skill, title, body, dry_run } => {
+        RepoCmd::Pr { skill, title, body, dry_run } => {
             let r = crate::pr::pr(ctx, &skill, title.as_deref(), body.as_deref(), dry_run)?;
             emit(json, &r, |r| {
                 println!("{} → {} (branch {})", r.skill, r.upstream, r.branch);
@@ -261,7 +261,7 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                 }
             });
         }
-        WsCmd::Publish { target, bump, dry_run, push, pr, accept_copyleft } => {
+        RepoCmd::Publish { target, bump, dry_run, push, pr, accept_copyleft } => {
             let r = crate::publish::publish(ctx, &crate::publish::PublishOptions { target, bump, dry_run, push, pr, accept_copyleft })?;
             let blocked = r.blocked;
             emit(json, &r, print_publish);
@@ -269,23 +269,23 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        WsCmd::AllowLicense { skill, justification } => {
-            let ws = workspace::require(ctx)?;
+        RepoCmd::AllowLicense { skill, justification } => {
+            let ws = source_repo::require(ctx)?;
             if justification.trim().len() < 10 {
                 bail!("give a real justification (e.g. \"separate licence agreement with the vendor\")");
             }
-            workspace::set_license_override(&ws, &skill, &justification)?;
+            source_repo::set_license_override(&ws, &skill, &justification)?;
             emit(json, &serde_json::json!({ "skill": skill, "justification": justification }), |_| {
                 println!("{skill}: licence override recorded (shown in every publish pre-flight)")
             });
         }
-        WsCmd::Workspaces => {
-            let all = workspace::all_workspaces(ctx)?;
+        RepoCmd::SourceRepos => {
+            let all = source_repo::all_source_repos(ctx)?;
             let rows: Vec<serde_json::Value> =
                 all.iter().map(|w| serde_json::json!({ "name": w.name, "root": w.root, "skills": w.manifest.skills.len() })).collect();
             emit(json, &rows, |rows| {
                 if rows.is_empty() {
-                    println!("no workspaces registered; run `tricks init` in a git repository");
+                    println!("no source repos registered; run `tricks init` in a git repository");
                 }
                 for r in rows {
                     println!("{:<20} {:>3} skills  {}", r["name"].as_str().unwrap(), r["skills"], r["root"].as_str().unwrap());
@@ -296,7 +296,7 @@ pub fn run(ctx: &Ctx, c: WsCmd) -> Result<()> {
     Ok(())
 }
 
-fn print_vendor(r: &workspace::VendorReport) {
+fn print_vendor(r: &source_repo::VendorReport) {
     println!("added {} at {}", r.name, r.path);
     if let Some(u) = &r.upstream {
         println!("  upstream {u} @ {}", r.base.as_deref().map(short).unwrap_or(""));
@@ -310,8 +310,8 @@ fn print_vendor(r: &workspace::VendorReport) {
     println!("  not committed yet: review and `git commit` when ready");
 }
 
-pub fn print_ws_install(r: &WsInstallReport) {
-    println!("workspace {}: dev deployments", r.workspace);
+pub fn print_repo_install(r: &RepoInstallReport) {
+    println!("source repo {}: dev deployments", r.source_repo);
     for (n, ps) in &r.skills {
         println!("  {n}");
         for p in ps {
@@ -320,7 +320,7 @@ pub fn print_ws_install(r: &WsInstallReport) {
     }
 }
 
-pub fn print_ws_update(r: &WsUpdateReport) {
+pub fn print_repo_update(r: &RepoUpdateReport) {
     if r.items.is_empty() {
         println!("no vendored skills to update");
     }
@@ -353,7 +353,7 @@ pub fn print_ws_update(r: &WsUpdateReport) {
     }
 }
 
-pub fn print_ws_outdated(r: &WsUpdateReport) {
+pub fn print_repo_outdated(r: &RepoUpdateReport) {
     let mut any = false;
     for i in &r.items {
         if i.state == "up-to-date" {
@@ -373,8 +373,8 @@ pub fn print_ws_outdated(r: &WsUpdateReport) {
     }
 }
 
-pub fn print_ws_status(w: &WsStatus) {
-    println!("workspace {} ({}{})", w.name, w.root, w.branch.as_deref().map(|b| format!(", branch {b}")).unwrap_or_default());
+pub fn print_repo_status(w: &RepoStatus) {
+    println!("source repo {} ({}{})", w.name, w.root, w.branch.as_deref().map(|b| format!(", branch {b}")).unwrap_or_default());
     for s in &w.skills {
         let mut notes = Vec::new();
         match &s.upstream {

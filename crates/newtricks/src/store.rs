@@ -162,7 +162,7 @@ pub fn remove_dir_force(p: &Path) -> Result<()> {
 /// previous deployment of each (skill, agent) for rollback.
 pub fn referenced(ctx: &Ctx) -> Result<BTreeSet<String>> {
     let mut keep = BTreeSet::new();
-    let lock = crate::config::WorkbenchLock::load(&ctx.paths.workbench_lock())?;
+    let lock = crate::config::UserLock::load(&ctx.paths.user_lock())?;
     keep.extend(lock.skills.into_iter().map(|s| s.tree));
     let c = &ctx.state.conn;
     for sql in [

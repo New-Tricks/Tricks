@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { TricksClient } from "./client";
 
-export interface WsSkill {
+export interface RepoSkill {
   name: string;
   path: string;
   upstream: string | null;
@@ -20,11 +20,11 @@ export interface WsSkill {
   uncommitted: boolean;
 }
 
-export interface WsStatus {
+export interface RepoStatus {
   root: string;
   name: string;
   branch: string | null;
-  skills: WsSkill[];
+  skills: RepoSkill[];
   targets: string[];
 }
 
@@ -38,7 +38,7 @@ export interface Placement {
   health: string;
 }
 
-export interface WbSkill {
+export interface UserSkill {
   id: string;
   name: string;
   ref_name: string;
@@ -50,8 +50,8 @@ export interface WbSkill {
 }
 
 export interface Status {
-  workbench: { skills: WbSkill[]; links: Placement[]; updates_ready: number };
-  workspace: WsStatus | null;
+  user: { skills: UserSkill[]; links: Placement[]; updates_ready: number };
+  source_repo: RepoStatus | null;
 }
 
 /** Shared status model; trees and the status bar render from it. */
@@ -70,12 +70,12 @@ export class Model implements vscode.Disposable {
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
     }
-    vscode.commands.executeCommand("setContext", "tricks.hasWorkspace", !!this.status?.workspace);
+    vscode.commands.executeCommand("setContext", "tricks.hasSourceRepo", !!this.status?.source_repo);
     this.emitter.fire();
   }
 
-  skill(name: string): WsSkill | undefined {
-    return this.status?.workspace?.skills.find((s) => s.name === name);
+  skill(name: string): RepoSkill | undefined {
+    return this.status?.source_repo?.skills.find((s) => s.name === name);
   }
 
   dispose(): void {

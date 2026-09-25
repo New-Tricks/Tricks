@@ -2,9 +2,10 @@
 
 pub mod agents;
 pub mod agentskill;
+pub mod catalogs;
 pub mod clawhub;
 pub mod cli;
-pub mod cli_ws;
+pub mod cli_repo;
 pub mod config;
 pub mod ctx;
 pub mod deploy;
@@ -29,12 +30,11 @@ pub mod risk;
 pub mod rpc;
 pub mod selfupdate;
 pub mod skill;
-pub mod sources;
+pub mod source_repo;
 pub mod state;
 pub mod statusline;
 pub mod store;
 pub mod tessl;
 pub mod treehash;
+pub mod user;
 pub mod wellknown;
-pub mod workbench;
-pub mod workspace;

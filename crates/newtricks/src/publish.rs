@@ -1,4 +1,4 @@
-//! `tricks publish` (spec §11): workspace → distribution repository installable by
+//! `tricks publish` (spec §11): source repo → distribution repository installable by
 //! APM, `npx skills`, Claude plugin marketplaces, Copilot, Codex and Cursor.
 
 use crate::config::{self, LicenseRecord, PublishTarget};
@@ -7,7 +7,7 @@ use crate::git::{self, git};
 use crate::license::{self, Gate};
 use crate::risk::RiskReport;
 use crate::skill::{self, SkillDoc};
-use crate::workspace::{self, Workspace};
+use crate::source_repo::{self, SourceRepo};
 use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
@@ -79,7 +79,7 @@ fn exclude_set(globs: &[String]) -> Result<GlobSet> {
     Ok(b.build()?)
 }
 
-fn selected_skills(ws: &Workspace, t: &PublishTarget) -> Result<Vec<String>> {
+fn selected_skills(ws: &SourceRepo, t: &PublishTarget) -> Result<Vec<String>> {
     if t.skills.iter().any(|s| s == "*") {
         return Ok(ws.manifest.skills.keys().cloned().collect());
     }
@@ -89,17 +89,59 @@ fn selected_skills(ws: &Workspace, t: &PublishTarget) -> Result<Vec<String>> {
     Ok(t.skills.clone())
 }
 
-fn target_repo(ctx: &Ctx, ws: &Workspace, t: &PublishTarget) -> Result<PathBuf> {
-    let p = ctx.paths.expand(&t.repo);
-    let p = if p.is_absolute() { p } else { ws.root.join(p) };
-    if !p.exists() {
-        bail!("publish target {} does not exist; clone the distribution repository there first", p.display());
+/// The remote a publish target points at: `owner/repo` or `host/owner/repo` shorthand,
+/// any git URL, or a path to a repository (relative to the source repo root).
+fn target_url(ctx: &Ctx, ws: &SourceRepo, t: &PublishTarget) -> Result<String> {
+    let r = t.repo.trim();
+    if r.is_empty() {
+        bail!("publish target has an empty `repo`");
     }
-    let p = crate::paths::canon(&p)?;
-    if git::repo_root(&p).as_deref() != Some(p.as_path()) {
-        bail!("publish target {} is not the root of a git repository", p.display());
+    if r.contains("://") || r.contains('@') {
+        return Ok(r.to_string());
     }
-    Ok(p)
+    if r.starts_with('.') || r.starts_with('/') || r.starts_with('~') {
+        let p = ctx.paths.expand(r);
+        let p = if p.is_absolute() { p } else { ws.root.join(p) };
+        return Ok(crate::paths::canon(&p).unwrap_or(p).to_string_lossy().to_string());
+    }
+    let src = crate::id::parse_source_input(r).with_context(|| format!("`{r}` is not a repository (use owner/repo or a git URL)"))?;
+    Ok(git::clone_url(&src))
+}
+
+/// Default marketplace name: the last path segment of the target URL.
+fn repo_name(url: &str) -> String {
+    let tail = url.trim_end_matches('/').rsplit(['/', ':']).next().unwrap_or(url);
+    tail.strip_suffix(".git").unwrap_or(tail).to_string()
+}
+
+/// The clone New Tricks publishes through, reset to the remote's default branch.
+/// Nothing is kept locally between runs: whatever the remote has is the starting point.
+fn prepare_target(ctx: &Ctx, url: &str) -> Result<(PathBuf, String, std::fs::File)> {
+    let key = crate::paths::path_key(Path::new(url));
+    let lock =
+        std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(ctx.paths.locks().join(format!("publish-{key}.lock")))?;
+    lock.lock().context("locking publish target")?;
+    let dir = ctx.paths.publish_clones().join(key);
+    if !dir.join(".git").exists() {
+        std::fs::create_dir_all(dir.parent().unwrap())?;
+        let _ = std::fs::remove_dir_all(&dir);
+        git(dir.parent().unwrap(), &["clone", "-q", url, &dir.to_string_lossy()])
+            .with_context(|| format!("cloning publish target {url}"))?;
+    } else {
+        git(&dir, &["remote", "set-url", "origin", url])?;
+        git(&dir, &["fetch", "-q", "--prune", "--prune-tags", "--force", "--tags", "origin"])
+            .with_context(|| format!("fetching publish target {url}"))?;
+    }
+    let branch = git::ls_remote(url)?.default_branch.unwrap_or_else(|| "main".into());
+    if git::git_ok(&dir, &["rev-parse", "--verify", "-q", &format!("refs/remotes/origin/{branch}")]) {
+        git(&dir, &["checkout", "-q", "-f", "-B", &branch, &format!("origin/{branch}")])?;
+    } else {
+        // Empty remote: start its first branch.
+        git(&dir, &["checkout", "-q", "-f", "--orphan", &branch])?;
+        let _ = git(&dir, &["rm", "-rfq", "--cached", "."]);
+    }
+    git(&dir, &["clean", "-qfdx"])?;
+    Ok((dir, branch, lock))
 }
 
 /// Canonical source string for provenance (remote URL normalized, else local path).
@@ -233,13 +275,13 @@ pub fn suggest_bump(old: &Path, new: &Path) -> (String, Vec<String>) {
     (level.into(), reasons)
 }
 
-/// Last workspace commit published to this target (from the trailer).
+/// Last source repo commit published to this target (from the trailer).
 fn last_published_source(repo: &Path) -> Option<String> {
     let log = git(repo, &["log", "-50", "--format=%(trailers:key=Tricks-Source,valueonly)"]).ok()?;
     log.lines().find(|l| !l.trim().is_empty()).and_then(|l| l.rsplit_once('@').map(|(_, c)| c.trim().to_string()))
 }
 
-fn changelog_section(ws: &Workspace, skills: &[String], since: Option<&str>, heading: &str) -> String {
+fn changelog_section(ws: &SourceRepo, skills: &[String], since: Option<&str>, heading: &str) -> String {
     let mut out = format!("## {heading}\n\n");
     let mut any = false;
     for name in skills {
@@ -267,7 +309,7 @@ fn changelog_section(ws: &Workspace, skills: &[String], since: Option<&str>, hea
 }
 
 fn marketplace_json(
-    ws: &Workspace,
+    ws: &SourceRepo,
     t: &PublishTarget,
     market_name: &str,
     skills: &[String],
@@ -329,8 +371,8 @@ pub fn validate_marketplace_name(n: &str) -> Result<()> {
 }
 
 pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
-    let ws = workspace::require(ctx)?;
-    let _lock = workspace::workspace_lock(ctx, &ws)?;
+    let ws = source_repo::require(ctx)?;
+    let _lock = source_repo::source_repo_lock(ctx, &ws)?;
     let t = ws.manifest.publish.targets.get(&opts.target).cloned().with_context(|| {
         format!(
             "no publish target `{}` (have: {})",
@@ -338,9 +380,15 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
             ws.manifest.publish.targets.keys().cloned().collect::<Vec<_>>().join(", ")
         )
     })?;
-    let repo = target_repo(ctx, &ws, &t)?;
+    if !opts.dry_run && !opts.push && !opts.pr {
+        bail!(
+            "publishing to `{}` needs --push (commit, tag and push) or --pr (push a branch and open a pull request); preview with --dry-run",
+            opts.target
+        );
+    }
+    let url = target_url(ctx, &ws, &t)?;
     let skills = selected_skills(&ws, &t)?;
-    let market_name = t.marketplace.clone().unwrap_or_else(|| repo.file_name().unwrap().to_string_lossy().to_string());
+    let market_name = t.marketplace.clone().unwrap_or_else(|| repo_name(&url));
     validate_marketplace_name(&market_name)?;
     let excludes = exclude_set(&t.exclude)?;
     let mut gates = Vec::new();
@@ -351,7 +399,7 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
     if dirty.trim().is_empty() {
         gates.push(gate("committed source", "pass", vec![]));
     } else if opts.dry_run {
-        gates.push(gate("committed source", "warn", vec!["workspace has uncommitted changes (allowed for --dry-run)".into()]));
+        gates.push(gate("committed source", "warn", vec!["source repo has uncommitted changes (allowed for --dry-run)".into()]));
     } else {
         gates.push(gate("committed source", "fail", dirty.lines().take(10).map(String::from).collect()));
         blocked = true;
@@ -359,7 +407,7 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
     let source_commit = git::head_commit(&ws.root)?;
 
     // 2. Lint.
-    let lint = crate::lint::lint_workspace(ctx, &ws, &skills)?;
+    let lint = crate::lint::lint_repo(ctx, &ws, &skills)?;
     if lint.errors > 0 {
         blocked = true;
         gates.push(gate(
@@ -378,6 +426,8 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
             lint.findings.iter().filter(|f| f.severity == "warning").map(|f| format!("{} {} {}", f.code, f.skill, f.message)).collect(),
         ));
     }
+
+    let (repo, branch, _target_lock) = prepare_target(ctx, &url)?;
 
     // 3. Licence gate for vendored skills.
     let (public, vis_note) = target_visibility(ctx, &repo);
@@ -431,7 +481,7 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
             }
             let lower = rel.to_lowercase();
             if lower.ends_with(".env") || lower.starts_with("notes/") || lower.contains(".draft.") || lower.ends_with(".ds_store") {
-                leak_warn.push(format!("{name}/{rel} looks workspace-only (add it to exclude)"));
+                leak_warn.push(format!("{name}/{rel} looks private to the source repo (add it to exclude)"));
             }
             let to = dest.join(&rel);
             std::fs::create_dir_all(to.parent().unwrap())?;
@@ -590,14 +640,6 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
         }
     }
 
-    // Target must be clean before we write.
-    let tdirty = git(&repo, &["status", "--porcelain"])?;
-    if !tdirty.trim().is_empty() {
-        blocked = true;
-        gates.push(gate("clean target", "fail", tdirty.lines().take(10).map(String::from).collect()));
-    } else {
-        gates.push(gate("clean target", "pass", vec![]));
-    }
     if !risk_diff.is_empty() {
         gates.push(gate("risk diff", "warn", risk_diff.clone()));
     } else {
@@ -606,7 +648,7 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
 
     let mut rep = PublishReport {
         target: opts.target.clone(),
-        repo: repo.to_string_lossy().to_string(),
+        repo: url.clone(),
         skills: skills.clone(),
         previous_version: prev.map(|v| v.to_string()),
         version: version_s.clone(),
@@ -633,7 +675,7 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
     }
 
     // Write: replace owned paths only.
-    let journal = ctx.state.journal_start("publish", &format!("{} → {}", ws.root.display(), repo.display()))?;
+    let journal = ctx.state.journal_start("publish", &format!("{} → {url}", ws.root.display()))?;
     if opts.pr {
         let branch = format!("tricks/publish-{}", version_s.clone().unwrap_or_else(|| source_commit[..9].to_string()));
         git(&repo, &["checkout", "-q", "-B", &branch])?;
@@ -672,14 +714,12 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
         git(&repo, &["tag", "-a", &tag, "-m", &format!("{} {tag}", ws.name)])?;
         rep.tag = Some(tag);
     }
-    if opts.push || opts.pr {
-        let branch = git::current_branch(&repo).unwrap_or_else(|| "HEAD".into());
-        git(&repo, &["push", "-q", "-u", "origin", &branch])?;
-        if let Some(tag) = &rep.tag {
-            git(&repo, &["push", "-q", "origin", tag])?;
-        }
-        rep.pushed = true;
+    let head = git::current_branch(&repo).unwrap_or_else(|| branch.clone());
+    git(&repo, &["push", "-q", "-u", "origin", &head]).with_context(|| format!("pushing to {url}"))?;
+    if let Some(tag) = &rep.tag {
+        git(&repo, &["push", "-q", "origin", tag])?;
     }
+    rep.pushed = true;
     if opts.pr {
         let body = format!(
             "Published by New Tricks from `{}` at `{}`.\n\n{}\n\nTag `v{}` after merging.",

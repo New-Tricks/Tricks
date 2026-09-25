@@ -254,7 +254,11 @@ fn live_adapters_run_together_and_all_list_the_same_skill() {
     let skills_sh = with_server(&mut s, "TRICKS_SKILLS_SH_URL");
     let tessl = with_server(&mut s, "TRICKS_TESSL_URL");
     let clawhub = with_server(&mut s, "TRICKS_CLAWHUB_URL");
-    put(&skills_sh, "/api/search?q=pdf&limit=20", json!({"skills": [{"skillId": "pdf", "name": "pdf", "installs": 500, "source": "acme/tools"}]}));
+    put(
+        &skills_sh,
+        "/api/search?q=pdf&limit=20",
+        json!({"skills": [{"skillId": "pdf", "name": "pdf", "installs": 500, "source": "acme/tools"}]}),
+    );
     put(
         &tessl,
         "/experimental/search?q=pdf&page%5Bsize%5D=20",

@@ -1,5 +1,5 @@
 //! Three-way merge of an upstream skill directory into a customized copy (spec §10):
-//! B = recorded base, C = workspace files (ours), U = latest upstream (theirs).
+//! B = recorded base, C = source repo files (ours), U = latest upstream (theirs).
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};

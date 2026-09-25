@@ -1,4 +1,4 @@
-//! M3/M4 acceptance: workspace authoring, upstream merges, variants, lint, publish, pr.
+//! M3/M4 acceptance: source repo authoring, upstream merges, variants, lint, publish, pr.
 // Asserts on symlinked placements; Windows deploys copies (spec §8), so these run on Unix.
 #![cfg(unix)]
 
@@ -25,8 +25,28 @@ fn setup() -> (Sandbox, PathBuf, PathBuf) {
     std::fs::create_dir_all(&ws).unwrap();
     git(&ws, &["init", "-q", "-b", "main"]);
     s.ok_in(&ws, &["init"]);
-    commit_all(&ws, "init workspace");
+    commit_all(&ws, "init source repo");
     (s, up, ws)
+}
+
+/// A bare distribution repository at `github.com/<owner>/<name>` holding one README.
+fn publish_remote(s: &Sandbox, owner: &str, name: &str, readme: &str) -> PathBuf {
+    let remote = s.fixtures.join(owner).join(name);
+    std::fs::create_dir_all(&remote).unwrap();
+    git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+    let seed = s.root().join(format!("seed-{name}"));
+    git(&s.root(), &["clone", "-q", remote.to_str().unwrap(), seed.to_str().unwrap()]);
+    write(&seed.join("README.md"), readme);
+    commit_all(&seed, "readme");
+    git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    remote
+}
+
+/// A fresh clone of a bare remote, to inspect what was pushed.
+fn checkout(s: &Sandbox, remote: &Path) -> PathBuf {
+    let d = tempfile::Builder::new().prefix("check-").tempdir_in(s.root()).unwrap().keep();
+    git(&s.root(), &["clone", "-q", remote.to_str().unwrap(), d.join("c").to_str().unwrap()]);
+    d.join("c")
 }
 
 fn read(p: &Path) -> String {
@@ -42,10 +62,27 @@ fn set_interval_zero(s: &Sandbox) {
 }
 
 #[test]
+fn init_agent_skill_is_placed_in_the_repository_not_user_scope() {
+    let s = Sandbox::new();
+    let ws = s.root().join("team-skills");
+    std::fs::create_dir_all(&ws).unwrap();
+    git(&ws, &["init", "-q", "-b", "main"]);
+    let r = s.json_in(&ws, &["init", "--agent-skill"]);
+    let placed: Vec<String> = r["agent_skill"].as_array().unwrap().iter().map(|p| p.as_str().unwrap().to_string()).collect();
+    assert_eq!(placed.len(), 2, "{r}");
+    assert!(placed.iter().all(|p| p.starts_with(ws.to_str().unwrap())), "{placed:?}");
+    assert!(ws.join(".claude/skills/new-tricks/SKILL.md").exists());
+    assert!(!s.home.join(".claude/skills/new-tricks").exists(), "nothing at user scope");
+    // Git-excluded, so the repository stays clean apart from what init itself wrote.
+    let status = git(&ws, &["status", "--porcelain", "--untracked-files=all"]);
+    assert!(!status.contains("new-tricks"), "{status}");
+}
+
+#[test]
 fn init_vendor_and_block_class_confirmation() {
     let (s, _up, ws) = setup();
     assert!(read(&ws.join(".gitignore")).contains("tricks.work.toml"));
-    assert!(read(&s.config.join("tricks.toml")).contains("[workspaces]"));
+    assert!(read(&s.config.join("tricks.toml")).contains("[source-repos]"));
     let r = s.json_in(&ws, &["vendor", "acme/skills//hello"]);
     assert_eq!(r["upstream"], "github.com/acme/skills//skills/hello");
     assert_eq!(r["license"]["class"], "allow");
@@ -197,7 +234,7 @@ fn branch_experiments_variants_and_agent_trailers() {
     assert_eq!(std::fs::read_link(&deployed).unwrap(), ws.join("skills/greeter"));
     assert!(git(&ws, &["status", "--porcelain", "--", "tricks.work.toml"]).is_empty(), "work file must be gitignored");
     let st = s.json_in(&ws, &["status"]);
-    let skills = st["workspace"]["skills"].as_array().unwrap();
+    let skills = st["source_repo"]["skills"].as_array().unwrap();
     let g = skills.iter().find(|x| x["name"] == "greeter").unwrap();
     assert!(g["branches"].as_array().unwrap().iter().any(|b| b == "terse"), "{g}");
 }
@@ -215,15 +252,11 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
         &ws.join("skills/greeter/SKILL.md"),
         &read(&ws.join("skills/greeter/SKILL.md")).replace("---\n\n#", "metadata:\n  tricks-lint-disable: NT203\n---\n\n#"),
     );
-    let target = s.root().join("acme-skills-public");
-    std::fs::create_dir_all(&target).unwrap();
-    git(&target, &["init", "-q", "-b", "main"]);
-    write(&target.join("README.md"), "hand-written readme\n");
-    commit_all(&target, "readme");
+    let remote = publish_remote(&s, "acme", "acme-skills-public", "hand-written readme\n");
     let m = read(&ws.join("tricks.toml"));
     std::fs::write(
         ws.join("tricks.toml"),
-        format!("{m}\n[publish.targets.public]\nrepo = \"../acme-skills-public\"\nskills = [\"*\"]\nexclude = [\"notes/**\"]\n"),
+        format!("{m}\n[publish.targets.public]\nrepo = \"acme/acme-skills-public\"\nskills = [\"*\"]\nexclude = [\"notes/**\"]\n"),
     )
     .unwrap();
     commit_all(&ws, "setup");
@@ -239,16 +272,22 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
     std::fs::write(&md, good).unwrap();
     commit_all(&ws, "fix name");
 
-    // Dirty workspace blocks a real publish.
+    // Dirty source repo blocks a real publish.
     write(&ws.join("scratch.txt"), "x");
-    let o = s.cmd(&ws, &["--json", "publish", "public", "--bump", "minor", "--yes"]);
+    let o = s.cmd(&ws, &["--json", "publish", "public", "--bump", "minor", "--push", "--yes"]);
     assert!(!o.status.success());
     std::fs::remove_file(ws.join("scratch.txt")).unwrap();
 
-    let r = s.json_in(&ws, &["publish", "public", "--bump", "minor", "--yes"]);
+    // A real publish has to say where the result goes.
+    let err = s.fail_in(&ws, &["publish", "public", "--bump", "minor", "--yes"]);
+    assert!(err.contains("--push") && err.contains("--pr"), "{err}");
+
+    let r = s.json_in(&ws, &["publish", "public", "--bump", "minor", "--push", "--yes"]);
     assert_eq!(r["blocked"], false, "{r}");
     assert_eq!(r["version"], "0.1.0");
     assert_eq!(r["tag"], "v0.1.0");
+    assert_eq!(r["pushed"], true);
+    let target = checkout(&s, &remote);
     assert!(target.join("skills/hello/SKILL.md").exists());
     assert!(target.join("skills/hello/LICENSE").exists(), "upstream licence carried");
     assert!(!target.join("skills/greeter/notes").exists(), "exclude globs applied");
@@ -264,14 +303,15 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
     assert!(read(&target.join("CHANGELOG.md")).contains("## v0.1.0"));
     let msg = git(&target, &["log", "-1", "--format=%B"]);
     assert!(msg.contains("Tricks-Source:"), "{msg}");
-    assert_eq!(git(&target, &["tag", "--list"]), "v0.1.0");
+    assert_eq!(git(&remote, &["tag", "--list"]), "v0.1.0");
 
     // Re-publish after deselecting a skill: removes it, keeps hand-added files.
     let m = read(&ws.join("tricks.toml")).replace("skills = [\"*\"]", "skills = [\"greeter\"]");
     std::fs::write(ws.join("tricks.toml"), m + "\n[publish.targets.public.plugins]\n").unwrap();
     commit_all(&ws, "only greeter");
-    let r = s.json_in(&ws, &["publish", "public", "--yes"]);
+    let r = s.json_in(&ws, &["publish", "public", "--push", "--yes"]);
     assert_eq!(r["suggested_bump"], "major", "{r}");
+    let target = checkout(&s, &remote);
     assert!(!target.join("skills/hello").exists());
     assert_eq!(read(&target.join("README.md")), "hand-written readme\n");
 }
@@ -280,13 +320,9 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
 fn licence_gate_blocks_proprietary_vendored_skill_unless_overridden() {
     let (s, _up, ws) = setup();
     s.ok_in(&ws, &["vendor", "acme/skills//secret-sauce", "--yes"]);
-    let target = s.root().join("pub");
-    std::fs::create_dir_all(&target).unwrap();
-    git(&target, &["init", "-q", "-b", "main"]);
-    write(&target.join("README.md"), "r\n");
-    commit_all(&target, "r");
+    publish_remote(&s, "acme", "pub", "r\n");
     let m = read(&ws.join("tricks.toml"));
-    std::fs::write(ws.join("tricks.toml"), format!("{m}\n[publish.targets.public]\nrepo = \"../pub\"\nmarketplace = \"acme-pub\"\n"))
+    std::fs::write(ws.join("tricks.toml"), format!("{m}\n[publish.targets.public]\nrepo = \"acme/pub\"\nmarketplace = \"acme-pub\"\n"))
         .unwrap();
     commit_all(&ws, "setup");
     let r = s.json_any_in(&ws, &["publish", "public", "--dry-run"]);

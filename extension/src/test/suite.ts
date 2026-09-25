@@ -1,6 +1,5 @@
 import * as assert from "assert";
 import * as cp from "child_process";
-import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { remoteUri, versionUri } from "../docs";
@@ -17,13 +16,13 @@ export async function run(): Promise<void> {
   // Status via the real binary over JSON-RPC.
   await api.refreshAll();
   const st = api.model.status;
-  assert.ok(st?.workspace, `no workspace in status: ${api.model.error}`);
-  const names = st.workspace.skills.map((s: any) => s.name).sort();
+  assert.ok(st?.source_repo, `no source repo in status: ${api.model.error}`);
+  const names = st.source_repo.skills.map((s: any) => s.name).sort();
   assert.deepStrictEqual(names, ["broken", "hello"]);
-  const hello = st.workspace.skills.find((s: any) => s.name === "hello");
+  const hello = st.source_repo.skills.find((s: any) => s.name === "hello");
   assert.strictEqual(hello.upstream, "github.com/acme/skills//skills/hello");
   // Lint diagnostics land in the Problems panel.
-  const root = st.workspace.root;
+  const root = st.source_repo.root;
   const diags = vscode.languages.getDiagnostics(vscode.Uri.file(path.join(root, "skills/broken/SKILL.md")));
   assert.ok(diags.some((d) => String(d.code) === "NT302"), `expected NT302, got ${diags.map((d) => d.code).join(",")}`);
   // Virtual documents: remote preview and base version.
@@ -56,7 +55,7 @@ export async function run(): Promise<void> {
   sub.dispose();
 
   // Publish: the pre-flight panel opens with the core's report, and publishing from it
-  // goes through the core's confirmation and writes the target repository.
+  // goes through the core's confirmation and pushes to the target repository.
   const prompts: string[] = [];
   api.client.confirm = async (prompt: string) => {
     prompts.push(prompt);
@@ -69,13 +68,13 @@ export async function run(): Promise<void> {
   assert.strictEqual(panel.report.blocked, false, JSON.stringify(panel.report.gates));
   assert.deepStrictEqual(panel.report.skills, ["hello"]);
   assert.ok(panel.panel.webview.html.includes("Publish <code>public</code>"));
-  const published = await panel.handle({ type: "publish", bump: "minor" });
+  const published = await panel.handle({ type: "publish", bump: "minor", push: true });
   assert.ok(published?.commit, JSON.stringify(published));
   assert.strictEqual(published.tag, "v0.1.0");
   assert.strictEqual(prompts.length, 1, "publishing asks for confirmation once");
   assert.strictEqual(api.PublishPanel.current, undefined, "panel closes after publishing");
-  const pub = path.join(root, "..", "pub");
-  assert.ok(fs.existsSync(path.join(pub, "skills/hello/SKILL.md")));
+  const pub = path.join(root, "..", "pub.git");
+  assert.ok(cp.execFileSync("git", ["show", "main:skills/hello/SKILL.md"], { cwd: pub, encoding: "utf8" }).includes("name: hello"));
   assert.strictEqual(cp.execFileSync("git", ["tag"], { cwd: pub, encoding: "utf8" }).trim(), "v0.1.0");
   console.log("extension integration tests passed");
 }

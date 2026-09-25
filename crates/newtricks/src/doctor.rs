@@ -62,12 +62,12 @@ pub fn run(ctx: &Ctx) -> Result<DoctorReport> {
             checks.push(check("API rate limit", r.rate.remaining > 50, format!("{}/{} remaining", r.rate.remaining, r.rate.limit)));
         }
     }
-    let m = crate::workbench::load_manifest(ctx)?;
-    for (name, path) in &m.workspaces {
+    let m = crate::user::load_manifest(ctx)?;
+    for (name, path) in &m.source_repos {
         let p = ctx.paths.expand(path);
-        let ok = p.join(crate::config::WORKSPACE_MANIFEST).is_file();
+        let ok = p.join(crate::config::REPO_MANIFEST).is_file();
         checks.push(check(
-            &format!("workspace {name}"),
+            &format!("source repo {name}"),
             ok,
             if ok { ctx.paths.contract(&p) } else { format!("{} has no tricks.toml", p.display()) },
         ));

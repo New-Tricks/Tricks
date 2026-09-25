@@ -6,14 +6,14 @@ Updated: 23 September 2026. Supersedes *Skills Manager — first-version specifi
 
 ## 1. Positioning
 
-**New Tricks is the design-time workbench for agent skills on a developer's machine.** It finds skills across fragmented indexes, lets you try them against real agents, customize them while still receiving upstream improvements, author your own, and publish a clean, installable repository.
+**New Tricks is the design-time workbench for agent skills on a developer's machine.** It finds skills across fragmented catalogs, lets you try them against real agents, customize them while still receiving upstream improvements, author your own, and publish a clean, installable repository.
 
 It deliberately does **not** compete with steady-state installers. Projects commit an `apm.yml` and install with [APM](https://github.com/microsoft/apm); anyone can install published skills with `npx skills`, a Claude plugin marketplace, or by copying the directory. New Tricks is the tool you use *before* that point, and the one that makes a skills repository consumable by all of them at once.
 
 | Stage | Tool |
 |---|---|
-| Discover, preview, trial | **New Tricks** (workbench) |
-| Customize upstream skills, experiment, author, lint | **New Tricks** (workspace) |
+| Discover, preview, trial | **New Tricks** (user scope) |
+| Customize upstream skills, experiment, author, lint | **New Tricks** (source repo) |
 | Publish a distribution repository | **tricks publish** |
 | Install into projects, CI, other machines | APM, `npx skills`, plugin marketplaces |
 
@@ -32,7 +32,7 @@ Differentiators no current tool combines:
 - VS Code extension (also Cursor, Windsurf, VSCodium via Open VSX) as the only GUI.
 - Agents: **Claude Code, Codex, GitHub Copilot, Cursor**.
 - Federated search, preview, user-level installs, test links into arbitrary projects.
-- Workspace authoring: vendor, import, new, lint, upstream merge, branch experiments.
+- Source repo authoring: vendor, import, new, lint, upstream merge, branch experiments.
 - Publishing with gates, generated ecosystem manifests, versioning and changelog.
 - Bundled agent skill so agents can use New Tricks safely.
 
@@ -46,30 +46,29 @@ Differentiators no current tool combines:
 | Adopting existing local installations | Dropped. Skills enter via search or `import <folder>`. |
 | Native desktop apps (Swift / GTK / WinUI) | Shelved in favour of the VS Code extension. |
 | Background daemon or OS scheduler | Dropped. Freshness checks run when New Tricks is invoked. |
-| Managing remote repositories (private copies) | Dropped. The workspace repo *is* the customized copy; the user owns its remote. |
+| Managing remote repositories (private copies) | Dropped. The source repo *is* the customized copy; the user owns its remote. |
 | Project-level dependency management | Owned by APM. New Tricks does not replace `apm.yml`. |
 | Semantic / embedding search | Deferred; adapter model allows it later. |
 | LobeHub and long-tail directories | Deferred (client registration required, or no API / terms-of-service questions). |
 | Codex plugin marketplace file (`.agents/plugins/marketplace.json`) | Deferred; Codex installs the bare `skills/` layout already. |
 | Publish-time templating / transforms beyond excludes | Deferred. |
-| Private workspace hosting other than GitHub for PR flows | Deferred; indexing and install from other git hosts work read-only. |
+| Source repo hosting other than GitHub for PR flows | Deferred; indexing and install from other git hosts work read-only. |
 
 ## 3. Terminology
 
 | Term | Meaning |
 |---|---|
-| **Workbench** | The user's machine-level New Tricks state: user-scope installs, registered workspaces, settings. Config at `~/.config/newtricks/tricks.toml`. |
-| **Workspace** | A git repository where skills are authored and customized. Contains `tricks.toml` and `tricks.lock`. The user owns its remote and pushes. |
-| **Upstream** | The source repository and path a vendored skill came from. |
-| **Vendored skill** | A copy of an upstream skill inside a workspace, with its upstream and base commit recorded. |
-| **Local original** | A skill authored in (or imported into) a workspace with no upstream. |
-| **Source** | Something New Tricks indexes: a git repository or a catalog. |
-| **Catalog** | An index that points at skills in repositories (skills.sh, `marketplace.json`, APM marketplace, GitHub search). |
+| **User scope** | The user's machine-level New Tricks state: user-scope installs, registered source repos, settings. Config (the *user config*) at `~/.config/newtricks/tricks.toml`. |
+| **Source repo** | A git repository where skills are authored and customized, and published from. Contains `tricks.toml` and `tricks.lock`. The user owns its remote and pushes. |
+| **Upstream** | The repository and path a vendored skill came from. |
+| **Vendored skill** | A copy of an upstream skill inside a source repo, with its upstream and base commit recorded. |
+| **Local original** | A skill authored in (or imported into) a source repo with no upstream. |
+| **Catalog** | Anything New Tricks searches: a skill repository, or an index that points at skills in repositories (skills.sh, `marketplace.json`, APM marketplace, Tessl, ClawHub, GitHub search). Managed with `tricks catalog`. |
 | **Store** | Immutable, content-addressed directory of exact skill revisions. |
 | **Link** | A symlink (junction on Windows) from an agent skill directory to a store entry or a dev worktree. |
 | **Target (link)** | A scope — `global` or a project path — plus a set of agents. |
-| **Publish target** | A repository (local checkout) that receives the published skills. |
-| **B / C / U / R** | B: upstream revision last incorporated. C: the workspace's customized version. U: latest fetched upstream. R: candidate merge of C with U. |
+| **Publish target** | The distribution repository that receives the published skills, named by its remote (`owner/repo`, a git URL, or a path). New Tricks publishes through its own clone of it. |
+| **B / C / U / R** | B: upstream revision last incorporated. C: the source repo's customized version. U: latest fetched upstream. R: candidate merge of C with U. |
 
 ## 4. Architecture
 
@@ -79,9 +78,9 @@ Differentiators no current tool combines:
 │ (TypeScript, no     │                         │                               │
 │  business logic)    │                         │  New Tricks core (Rust crate) │
 └─────────────────────┘                         │  ─ identity & resolution      │
-┌─────────────────────┐   in-process            │  ─ source adapters & index    │
+┌─────────────────────┐   in-process            │  ─ catalog adapters & index   │
 │ New Tricks CLI      │ ──────────────────────▶ │  ─ store & deployment         │
-└─────────────────────┘                         │  ─ workspace & merge          │
+└─────────────────────┘                         │  ─ source repo & merge        │
                                                 │  ─ lint & risk scan           │
                                                 │  ─ publish                    │
                                                 └──────────────┬────────────────┘
@@ -93,18 +92,19 @@ Differentiators no current tool combines:
 - **Rust core library** used by the CLI binary. The VS Code extension bundles the platform binary and runs `tricks serve --stdio` as a child process for its lifetime (the ruff / biome / rust-analyzer model). No daemon, no OS scheduler.
 - **System `git`** performs all writes (fetch, merge, commit, push), inheriting the user's credential helpers and matching what users see with their own git tools. An embedded git library is used only for fast read-only operations (trees, history, hashing).
 - **Three-way merges** use git's merge machinery (`git merge-file` / `git merge-tree`).
-- **Concurrency**: per-source and per-workspace file locks plus an operation journal in `state.db`; interrupted operations are recoverable and report a specific retry action.
+- **Concurrency**: per-upstream, per-source-repo and per-publish-target file locks plus an operation journal in `state.db`; interrupted operations are recoverable and report a specific retry action.
 
 ### On-disk layout
 
 ```
 ~/.config/newtricks/                # %APPDATA%\newtricks on Windows
-  tricks.toml                    # workbench manifest (intent)
-  tricks.lock                    # workbench lock (resolved)
+  tricks.toml                    # user manifest (intent)
+  tricks.lock                    # user lock (resolved)
 <data-dir>/                          # see table below
   store/<tree-hash>/                 # immutable, read-only skill revisions
   repos/<host>/<owner>/<repo>/       # fetch-only upstream mirrors (never pushed)
-  work/<workspace>/<skill>/<branch>/ # git worktrees for branch experiments
+  work/<source-repo>/<skill>/<branch>/ # git worktrees for branch experiments
+  publish/<key>/                     # New Tricks' clones of publish targets
   backups/                           # originals displaced by --shadow
   state.db                           # index (FTS5), catalog, links, deployments, journal
 ```
@@ -128,7 +128,7 @@ skill-ref  ::= [ host "/" ] owner "/" repo "//" path-or-name [ "@" ref ]
 source-ref ::= [ host "/" ] owner "/" repo
 ```
 
-- **`//` is mandatory** in every skill reference. It marks where the repository ends and the in-repo path begins (Terraform / go-getter convention), which keeps IDs unambiguous on hosts with nested groups. A reference without `//` denotes a repository/source, not a skill.
+- **`//` is mandatory** in every skill reference. It marks where the repository ends and the in-repo path begins (Terraform / go-getter convention), which keeps IDs unambiguous on hosts with nested groups. A reference without `//` denotes a repository, not a skill.
 - **Host**: if the first segment contains a dot it is a host (e.g. `github.mit.edu`); otherwise `github.com`.
 - **After `//`**: resolved as an exact path first (`//skills/pdf`), then by frontmatter `name` within the repository (`//pdf`), then by folder name. Must resolve uniquely; otherwise error listing candidates. A repository whose root is a skill is referenced by its name and stored canonically as `//.`.
 - **Canonical form** — always fully expanded host, `//`, full path, and resolved ref — is used in every file, lockfile and `--json` output.
@@ -187,7 +187,7 @@ Updates compare the published digest or latest version with the lock. A ClawHub 
 
 Conventions follow Cargo (TOML; intent in the manifest, resolved facts in the lock) with Go semantics (path identity, `@ref`, pseudo-versions for untagged commits). Filenames are tool-specific to avoid collisions: `tricks.toml`, `tricks.lock`, `tricks.work.toml`. Regular projects never contain these files — they commit `apm.yml`.
 
-### Workbench manifest
+### User manifest
 
 ```toml
 # ~/.config/newtricks/tricks.toml
@@ -196,11 +196,11 @@ agents         = ["claude", "codex"]     # default agents for `add`
 fetch_interval = "24h"
 live           = ["skills.sh", "tessl", "clawhub", "github"]   # live-query adapters used by search
 
-[workspaces]
+[source-repos]
 personal = "~/code/my-skills"
 team     = "~/code/acme-skills"
 
-[sources]
+[catalogs]
 "github.com/acme/skills"                                   = {}                        # plain repo
 "github.com/anthropics/claude-plugins-official"            = { kind = "marketplace" }
 
@@ -210,10 +210,13 @@ team     = "~/code/acme-skills"
 "github.com/randomdev/cool//skills/x"        = { branch = "main", update = "unsafe-auto" }
 ```
 
-### Workspace manifest
+### Source repo manifest
 
 ```toml
-# <workspace>/tricks.toml
+# <source-repo>/tricks.toml
+[source-repo]
+agents = ["claude", "codex"]           # agents for dev deployments (default: the user setting)
+
 [skills.pdf]
 path     = "skills/pdf"
 upstream = "github.com/anthropics/skills//skills/pdf"
@@ -227,19 +230,19 @@ path = "skills/deploy-aws"              # local original, no upstream
 ignore = ["NT305"]
 
 [publish.targets.public]
-repo    = "../acme-skills-public"       # local checkout of the target repository
+repo    = "acme/acme-skills-public"     # owner/repo, host/owner/repo, any git URL, or a path
 skills  = ["pdf", "deploy-aws"]
 exclude = ["evals/**", "notes/**", "*.draft.md"]
 
 [publish.targets.internal]
-repo   = "../acme-skills-internal"
+repo   = "git@git.acme.internal:skills/internal.git"
 skills = ["*"]
 ```
 
 ### Locks
 
 ```toml
-# workbench tricks.lock
+# user tricks.lock
 [[skill]]
 id     = "github.com/anthropics/skills//skills/pdf"
 ref    = "v1.4.0"
@@ -254,7 +257,7 @@ tree   = "…"
 ```
 
 ```toml
-# workspace tricks.lock
+# source repo tricks.lock
 [skills.pdf]
 base      = "a1b2c3d…"                  # B
 base_tree = "9f3c…"
@@ -262,7 +265,7 @@ base_tree = "9f3c…"
 
 ### Local overrides
 
-`tricks.work.toml` (gitignored, like `go.work`) holds machine-local overrides such as `use pdf@terse --local`, so personal experiments in a shared workspace never rewrite the committed `tricks.toml`.
+`tricks.work.toml` (gitignored, like `go.work`) holds machine-local overrides such as `use pdf@terse --local`, so personal experiments in a shared source repo never rewrite the committed `tricks.toml`.
 
 ## 7. Discovery and search
 
@@ -270,11 +273,11 @@ base_tree = "9f3c…"
 
 - **Catalog adapters** return *pointers* plus catalog-specific signals (install counts, categories, "listed in").
 - **The git adapter** resolves every pointer to real content — `SKILL.md` frontmatter and body plus the file tree — via the GitHub trees API and raw files (no full clones). Search always runs over actual content, normalized one way. The git adapter also indexes any repository added directly.
-- The index lives in `state.db` (SQLite FTS5), is built locally, and works offline once cached. Private and organization sources work through the user's own credentials. A future hosted "super-index" can be added as another adapter.
+- The index lives in `state.db` (SQLite FTS5), is built locally, and works offline once cached. Private and organization catalogs work through the user's own credentials. A future hosted "super-index" can be added as another adapter.
 
 ### Adapter modes
 
-- **Indexed**: fetched ahead of time (on `source add` and throttled refresh) into the local index.
+- **Indexed**: fetched ahead of time (on `catalog add` and throttled refresh) into the local index.
 - **Live-query**: called at search time when online, all enabled adapters concurrently; results are merged with indexed results and cached in the index with a TTL, so repeat and offline searches still find them.
 
 ### v1 adapters
@@ -288,7 +291,7 @@ base_tree = "9f3c…"
 | Tessl | live-query | Unauthenticated `GET https://api.tessl.io/experimental/search?q=&page[size]=`. Results are pointers into GitHub repositories (`sourceUrl` + `path`); only the pointed-to skill directories are indexed, since they often sit in large application repositories. Tessl's quality, aggregate score, security level and eval improvement are kept as listing signals; a MEDIUM/HIGH/CRITICAL security level becomes a risk flag |
 | ClawHub | live-query | Unauthenticated `GET https://clawhub.ai/api/v1/search?nonSuspiciousOnly=true` (skills ClawHub flags as suspicious are not shown). Mirrors of GitHub skills (e.g. from skills.sh) become git pointers. Native skills are catalog-hosted (§5): indexed from the skill and version detail, installed from ClawHub's ZIP with every file verified against the version's published SHA-256 list. Installs, downloads, stars, moderation verdict, security status and VirusTotal verdict are listing signals |
 | `.well-known/agent-skills/index.json` | indexed | agentskills.io discovery schema 0.2.0; covers any organization hosting its own index |
-| Pointer lists: `apm.yml`, `skills-lock.json` | indexed | `tricks source add ./project/apm.yml` surfaces what a project or team already uses. Interop only: never touches installed files |
+| Pointer lists: `apm.yml`, `skills-lock.json` | indexed | `tricks catalog add ./project/apm.yml` surfaces what a project or team already uses. Interop only: never touches installed files |
 
 ### Normalized record and facets
 
@@ -308,7 +311,7 @@ base_tree = "9f3c…"
 - Results are grouped by tree hash (identical copies) with near-identical forks noted: one result reads "in 4 catalogs · 6 forks · 2 customized versions".
 - Ranking: full-text relevance (name, description, body) × trust × popularity × freshness.
 
-## 8. Workbench installs and deployment
+## 8. User installs and deployment
 
 ### Store and links
 
@@ -322,10 +325,10 @@ base_tree = "9f3c…"
 | Mode | Behaviour | Use |
 |---|---|---|
 | `store` (default) | Link to immutable store revision | Normal installs |
-| `dev` | Link to a mutable workspace directory or worktree; edits are live | Authoring and branch experiments |
+| `dev` | Link to a mutable source repo directory or worktree; edits are live | Authoring and branch experiments |
 | `copy` | Physical copy written to a temporary directory and renamed into place (atomic swap); lock verifies tree hash and flags drift | Agents or platforms that cannot follow links |
 
-In a workspace, `tricks install` links every workspace skill in `dev` mode (workspace-style linking, as in pnpm workspaces).
+In a source repo, `tricks install` links every skill in it in `dev` mode (like linking in pnpm workspaces).
 
 ### Agents and placement
 
@@ -382,8 +385,8 @@ Per skill, in `tricks.toml`:
 | `update =` | Behaviour |
 |---|---|
 | `review` (default) | Fetch and prepare the candidate; never change a deployment until `tricks update` |
-| `auto` | Deploy newer commits locally on fetch. Allowed only for sources owned by the user or a GitHub org the user belongs to |
-| `unsafe-auto` | `auto` for a third-party source; the explicit spelling makes the risk visible in review |
+| `auto` | Deploy newer commits locally on fetch. Allowed only for repositories owned by the user or a GitHub org the user belongs to |
+| `unsafe-auto` | `auto` for a third-party repository; the explicit spelling makes the risk visible in review |
 | `pinned` | Stay on the locked revision |
 | `paused` | Do not fetch |
 
@@ -391,7 +394,7 @@ Per skill, in `tricks.toml`:
 
 Following Homebrew's model:
 
-- `tricks install` fetches sources whose last fetch is older than `fetch_interval` (default 24 h; `--offline` skips). `auto` entries deploy to latest at user scope; `review` entries get a prepared candidate and are reported ("2 updates ready — run `tricks update`").
+- `tricks install` fetches upstreams whose last fetch is older than `fetch_interval` (default 24 h; `--offline` skips). `auto` entries deploy to latest at user scope; `review` entries get a prepared candidate and are reported ("2 updates ready — run `tricks update`").
 - `tricks update [skill]` applies reviewed updates and moves the lock. `tricks outdated` lists pending ones.
 - The VS Code extension runs the same throttled check on activation and on a timer while open, and updates its status bar item.
 - An agent status-line integration reads cached state only and never touches the network.
@@ -408,19 +411,19 @@ Every prepared update is scanned and summarized alongside the B → U diff: new 
 
 Catalog security signals are added to the risk surface in search and preview: Tessl security level MEDIUM or above; ClawHub suspicious flag, malware block, non-clean moderation or security status, and a VirusTotal `malicious` verdict. VirusTotal `suspicious` is shown but not flagged, because it fires on any shell usage.
 
-## 10. Workspace authoring
+## 10. Source repo authoring
 
 ### Bringing skills in
 
 ```bash
-tricks init                                        # make the current git repo a workspace
+tricks init                                        # make the current git repo a source repo
 tricks vendor anthropics/skills//pdf               # copy upstream skill in, record upstream + base
 tricks import ~/somewhere/my-skill                 # local original
 tricks import ~/somewhere/pdf --upstream anthropics/skills//pdf --base a1b2c3d
 tricks new my-skill                                # scaffold
 ```
 
-Vendoring is copy-on-write: third-party skills can be installed at user scope straight from upstream; a workspace copy is only created when the user chooses to customize (`tricks edit` on an upstream skill offers to vendor it). Multiple workspaces can be registered in the workbench (typically one personal and one team repository).
+Vendoring is copy-on-write: third-party skills can be installed at user scope straight from upstream; a source repo copy is only created when the user chooses to customize (`tricks edit` on an upstream skill offers to vendor it). Multiple source repos can be registered in the user config (typically one personal and one team repository).
 
 `vendor` shows the upstream licence class (§11). For Block-class skills — e.g. terms forbidding derivative works — it requires confirmation ("terms may prohibit modification; you are responsible"). Search result cards show the licence class too.
 
@@ -445,7 +448,7 @@ Comparisons available in CLI and extension:
 
 ### Branch experiments
 
-UX follows `pnpm patch`; mechanics are plain git branches and worktrees of the workspace.
+UX follows `pnpm patch`; mechanics are plain git branches and worktrees of the source repo.
 
 ```bash
 tricks edit pdf                    # worktree for editing; deployment flips to dev mode; prints path
@@ -465,7 +468,7 @@ Ruff-style rules with stable codes, default severities, configuration under `[li
 |---|---|---|
 | **NT1xx** Spec conformance ([Agent Skills spec](https://agentskills.io/specification), cross-checked against the `skills-ref` test suite) | `name` format (lowercase letters of any script, digits, single hyphens; NFKC-normalized); name ≠ folder; `description` empty or > 1024; `compatibility` > 500; `metadata` not a string map; `skill.md` instead of `SKILL.md` (NT110, warning) | error |
 | **NT2xx** Structure | broken relative links; missing referenced scripts; absolute or `~/` paths; references nested > 1 level; `SKILL.md` > 500 lines; body > ~5k tokens | error for broken links/files; warn for size/nesting |
-| **NT3xx** Triggering quality | description lacks "use when…"; description < ~60 chars; duplicate `name` in workspace; near-duplicate descriptions competing for triggers | warn; duplicate name is error |
+| **NT3xx** Triggering quality | description lacks "use when…"; description < ~60 chars; duplicate `name` in the source repo; near-duplicate descriptions competing for triggers | warn; duplicate name is error |
 | **NT4xx** Agent compatibility | agent-specific keys without that agent targeted; unknown keys (preserved); non-ASCII frontmatter (APM rejects it) | warn / info |
 | **NT5xx** Safety | hidden/bidi Unicode; secret patterns; `curl … \| sh` or remote fetch in scripts; broad `allowed-tools` such as `Bash(*)` | error for Unicode and secrets; warn otherwise |
 
@@ -473,7 +476,7 @@ Ruff-style rules with stable codes, default severities, configuration under `[li
 
 ## 11. Publishing
 
-The workspace is source; the publish target is distribution. Consumers never see drafts, experiments, vendoring bookkeeping or eval scaffolding. Precedent: Copybara; monorepo build → dist → publish.
+The source repo is where skills are made; the publish target is distribution. Consumers never see drafts, experiments, vendoring bookkeeping or eval scaffolding. Precedent: Copybara; monorepo build → dist → publish.
 
 ### Output
 
@@ -513,16 +516,16 @@ devops    = ["deploy-aws"]
 
 With groups, each plugin entry lists its `skills` (`["./skills/pdf", "./skills/docx"]`). The marketplace name defaults to the target repository name, must be kebab-case, and is checked against Claude Code's reserved names (e.g. `agent-skills`, `anthropic-plugins`); a collision is a publish error.
 
-**`apm.yml`**: metadata only — `name`, `version`, `description` (≤ ~80 chars, separate from any `SKILL.md` description), `license`. Not required by APM to install, but gives APM users a package name and the workspace version.
+**`apm.yml`**: metadata only — `name`, `version`, `description` (≤ ~80 chars, separate from any `SKILL.md` description), `license`. Not required by APM to install, but gives APM users a package name and the source repo version.
 
 Transforms in v1 are limited to: dropping `exclude` globs, stripping New Tricks-only frontmatter keys, and carrying upstream licence and attribution. What was tested is what ships.
 
 ### Gates (in order)
 
-1. Publish only from a clean, committed workspace, so provenance names an exact commit. `--dry-run` works on a dirty tree.
+1. Publish only from a clean, committed source repo, so provenance names an exact commit. `--dry-run` works on a dirty tree.
 2. `tricks lint` has zero errors.
 3. Licence gate for vendored skills, per the licence policy below. Target visibility is checked via the API, not trusted from config.
-4. Leak check: secret patterns; warnings for workspace-looking files (`.env`, `notes/`, `*.draft.*`) not excluded.
+4. Leak check: secret patterns; warnings for files that look private to the source repo (`.env`, `notes/`, `*.draft.*`) not excluded.
 5. Risk diff since last publish (e.g. "+1 script; `allowed-tools` widened on pdf") shown for confirmation.
 6. *(Future)* eval gate.
 
@@ -538,7 +541,7 @@ Real skill repositories make this necessary: `anthropics/skills` has no root lic
 4. GitHub licence API as last resort (404 → no licence; `NOASSERTION` → unknown).
 5. For catalog-hosted skills with no licence of their own: the catalog's publishing terms (ClawHub: "all skills published on ClawHub are licensed under MIT-0"). A skill's own restrictive licence still wins — re-uploads of proprietary skills stay blocked.
 
-When sources disagree the most restrictive result wins. The class, source and confidence are recorded in the workspace lock. For SPDX expressions, `OR` takes the most permissive branch and `AND` the most restrictive.
+When these disagree the most restrictive result wins. The class, where it came from and the confidence are recorded in the source repo lock. For SPDX expressions, `OR` takes the most permissive branch and `AND` the most restrictive.
 
 | Class | Examples | Public target | Private target |
 |---|---|---|---|
@@ -552,17 +555,17 @@ Overrides are per skill in `tricks.toml`, require a written justification (e.g. 
 
 ### Target repository behaviour
 
-- The target working tree must be clean.
+- `repo` names the remote, never a working copy. New Tricks keeps its own clone of each target in its data directory and resets it to the remote's default branch before every publish, so nothing left over from an earlier run (or a hand edit) can leak into a release. A relative path is resolved against the source repo root and treated like any other remote, so it has to accept pushes (a bare repository).
 - New Tricks owns only the paths listed in `.tricks-published`; re-publish syncs exactly those (including removals of deselected skills) and never touches hand-added files.
 - Each publish is committed with provenance trailers, e.g. `Tricks-Source: github.com/acme/my-skills@4e1f9a2`.
-- No push by default. `--push` pushes; `--pr` opens a pull request on the target via `gh` for team review.
+- A publish always lands on the remote: `--push` commits, tags and pushes the default branch; `--pr` pushes a `tricks/publish-*` branch and opens a pull request via `gh` for team review. One of the two is required (a commit left in New Tricks' private clone would be invisible); `--dry-run` previews without either.
 
 ### Versioning
 
-- **One version per workspace.** All skills in a workspace release together. Separate version lines require separate workspace repositories.
+- **One version per source repo.** All skills in a source repo release together. Separate version lines require separate source repos.
 - `tricks publish <target> --bump major|minor|patch` tags the target `vX.Y.Z` (each target receives the same tag). Untagged publishes are allowed; consumers see Go-style pseudo-versions.
 - The version is written into every published `SKILL.md` as `metadata.version`, and into the generated `apm.yml` and `marketplace.json`.
-- `CHANGELOG.md` is generated from workspace commit messages since the last tag, grouped by skill.
+- `CHANGELOG.md` is generated from source repo commit messages since the last tag, grouped by skill.
 - New Tricks suggests a bump — the largest across changed skills — and the user confirms or overrides:
   - major: `name` changed, `description` rewritten, files removed, `allowed-tools` widened
   - minor: new files or sections
@@ -570,11 +573,11 @@ Overrides are per skill in `tricks.toml`, require a written justification (e.g. 
 
 ### Contributing upstream
 
-`tricks pr pdf` extracts the B → C diff for that skill, applies it onto current upstream in a branch of an on-demand public fork of the upstream repository, shows exactly which commits become public, asks for confirmation, and opens the pull request via `gh`. Only that one change leaves the workspace.
+`tricks pr pdf` extracts the B → C diff for that skill, applies it onto current upstream in a branch of an on-demand public fork of the upstream repository, shows exactly which commits become public, asks for confirmation, and opens the pull request via `gh`. Only that one change leaves the source repo.
 
 ## 12. Agent use of New Tricks
 
-New Tricks ships a `tricks` skill (installed with `tricks init --agent-skill` or offered on first run) teaching the workflow: search → preview → vendor → `edit --branch` → lint → `commit`.
+New Tricks ships a `new-tricks` skill (offered on first run and installed at user scope with `tricks agent-skill`; `tricks init --agent-skill` places it at project scope in the repository being initialized, git-excluded like a test link) teaching the workflow: search → preview → vendor → `edit --branch` → lint → `commit`.
 
 Its `allowed-tools` pre-approves only read-only and branch-confined commands:
 
@@ -598,7 +601,7 @@ New Tricks borrows credentials and stores none.
   2. `gh auth token --hostname <host>` (also covers GitHub Enterprise hosts)
   3. In VS Code: a session from the built-in GitHub authentication provider, passed in memory to `serve`
   4. Otherwise anonymous, read-only mode with a hint to run `gh auth login`
-- Required scopes: `repo` (private sources, PRs, target visibility checks) and `read:org` (trust facet). `tricks doctor` reports which capabilities the current token enables.
+- Required scopes: `repo` (private repositories and catalogs, PRs, target visibility checks) and `read:org` (trust facet). `tricks doctor` reports which capabilities the current token enables.
 - No New Tricks OAuth app and no token storage in v1.
 - Non-GitHub hosts: indexing and install via plain git, read-only.
 
@@ -606,9 +609,9 @@ New Tricks borrows credentials and stores none.
 
 All features go through `serve --stdio`; the extension contains no business logic, and everything is also available in the CLI.
 
-1. **Discover** — sidebar view and search webview with facets; result cards show trust, risk surface, popularity, "in N catalogs · M forks". Actions: Preview, Install for agents…, Vendor into workspace.
-2. **Preview** — remote skills open as read-only `New Tricks:` virtual documents in the normal editor and Markdown preview, with a supporting-file tree, without cloning into the workspace. Nothing executes; scripts open as text; rendered content cannot invoke editor or desktop operations.
-3. **Workspace** — active when a `tricks.toml` is open:
+1. **Discover** — sidebar view and search webview with facets; result cards show trust, risk surface, popularity, "in N catalogs · M forks". Actions: Preview, Install for agents…, Vendor into source repo.
+2. **Preview** — remote skills open as read-only `New Tricks:` virtual documents in the normal editor and Markdown preview, with a supporting-file tree, without cloning anything. Nothing executes; scripts open as text; rendered content cannot invoke editor or desktop operations.
+3. **Source Repo** — active when a `tricks.toml` is open:
    - skill tree with badges (customized, update ready, lint errors, branches)
    - lint results in the Problems panel; frontmatter JSON schema for completion and validation
    - Changes via the built-in diff editor (B → C, B → U, C → R)
@@ -623,18 +626,18 @@ Not in v1: agent matrix, eval or metrics dashboards, custom editor, settings UI 
 
 | Area | Commands |
 |---|---|
-| Discover | `search <query> [--facet …]`, `show <skill>`, `source add \| list \| remove` |
-| Workbench | `add <skill>[@ref] [--agents …]`, `remove`, `install [--frozen]`, `update [skill]`, `outdated`, `status` |
-| Workspace | `init [--agent-skill]`, `vendor <skill>`, `import <folder> [--upstream … --base …]`, `new <name>`, `lint [--fix]` |
+| Discover | `search <query> [--facet …]`, `show <skill>`, `catalog add \| list \| remove \| refresh` |
+| User scope | `add <skill>[@ref] [--agents …]`, `remove`, `install [--frozen]`, `update [skill]`, `outdated`, `status` (inside a source repo, `-g` selects user scope) |
+| Source repo | `init [--agent-skill]`, `source-repos`, `vendor <skill>`, `import <folder> [--upstream … --base …]`, `new <name>`, `lint [--fix]` |
 | Experiment | `edit <skill> [--branch b]`, `commit <skill> -m`, `use <skill>@<branch> [--local]` |
 | Test deploy | `link <skill> (--to <path> \| --global) --agents …`, `unlink [--all]` |
 | Upstream | `pr <skill>` |
-| Publish | `publish <target> [--bump …] [--dry-run] [--push \| --pr]` |
+| Publish | `publish <target> [--bump …] (--dry-run \| --push \| --pr)` |
 | Plumbing | `serve --stdio`, `doctor`, `self-update`, `gc` |
 
 Global flags: `--json` on every read command, `--offline`, `--yes`.
 
-Short-name resolution: `pdf` alone resolves against the current workspace's `tricks.toml` keys, then workbench installs, then falls back to search with an interactive picker in a TTY (error in `--json` / non-interactive mode).
+Short-name resolution: `pdf` alone resolves against the current source repo's `tricks.toml` keys, then user installs, then falls back to search with an interactive picker in a TTY (error in `--json` / non-interactive mode).
 
 ## 16. Distribution
 
@@ -657,7 +660,7 @@ Short-name resolution: `pdf` alone resolves against the current workspace's `tri
 | Licence detection | `spdx` crate, four-step detection, policy table, vendor-time warnings | §10, §11 |
 | `.git/info/exclude` with worktrees / submodules | Resolve via `git rev-parse --git-path`; shared across worktrees; marked block with reference counting | §8 |
 | Generated manifests | One layout serves `npx skills`, APM and Claude marketplaces; single-plugin default with optional groups; metadata-only `apm.yml` | §11 |
-| `apm.yml` / `skills-lock.json` as search sources | Yes — pointer-list adapter in v1 | §7 |
+| `apm.yml` / `skills-lock.json` as search catalogs | Yes — pointer-list adapter in v1 | §7 |
 
 ### Verification tests scheduled in milestones
 
@@ -671,10 +674,10 @@ Short-name resolution: `pdf` alone resolves against the current workspace's `tri
 
 | # | Milestone | Contents | Proves |
 |---|---|---|---|
-| M1 | Identity + search | ID grammar and URL normalization; indexed and live-query adapter modes; git, `marketplace.json` (Claude + APM), skills.sh, Tessl, ClawHub and GitHub search (live), `.well-known`, and `apm.yml` / `skills-lock.json` pointer-list adapters; FTS5 index, facets, dedup, licence class; `search`, `show`, `source`; auth chain; `--json`. Works anonymously. | Federated search beats what exists |
-| M2 | Workbench installs | Store in platform-native locations; placement for Claude Code, Codex, Copilot, Cursor with per-agent `follows_links` and copy fallback; workbench manifest and lock; `add/remove/install/update/outdated/status`; policies and risk scan; `link/unlink` with exclude handling and `--shadow`; §17 verification tests. Extension: Discover, Preview, Status bar. | Safe, reproducible install and trial |
-| M3 | Workspace authoring | `init/vendor/import/new`; three-way upstream merge; `edit/commit/use`, worktrees, `tricks.work.toml`; lint NT1–5xx; bundled agent skill. Extension: Workspace view, Problems, diff and merge editors. | The customize-and-experiment loop |
-| M4 | Publish | Targets, gates including licence policy, generated `marketplace.json` (single plugin + optional groups), metadata-only `apm.yml`, provenance, workspace versioning and changelog, `--push/--pr`, `tricks pr`; three-installer end-to-end test in CI. Extension: Publish pre-flight. | Bridge to APM and the ecosystem |
+| M1 | Identity + search | ID grammar and URL normalization; indexed and live-query adapter modes; git, `marketplace.json` (Claude + APM), skills.sh, Tessl, ClawHub and GitHub search (live), `.well-known`, and `apm.yml` / `skills-lock.json` pointer-list adapters; FTS5 index, facets, dedup, licence class; `search`, `show`, `catalog`; auth chain; `--json`. Works anonymously. | Federated search beats what exists |
+| M2 | User installs | Store in platform-native locations; placement for Claude Code, Codex, Copilot, Cursor with per-agent `follows_links` and copy fallback; user manifest and lock; `add/remove/install/update/outdated/status`; policies and risk scan; `link/unlink` with exclude handling and `--shadow`; §17 verification tests. Extension: Discover, Preview, Status bar. | Safe, reproducible install and trial |
+| M3 | Source repo authoring | `init/vendor/import/new`; three-way upstream merge; `edit/commit/use`, worktrees, `tricks.work.toml`; lint NT1–5xx; bundled agent skill. Extension: Source Repo view, Problems, diff and merge editors. | The customize-and-experiment loop |
+| M4 | Publish | Targets, gates including licence policy, generated `marketplace.json` (single plugin + optional groups), metadata-only `apm.yml`, provenance, source repo versioning and changelog, `--push/--pr`, `tricks pr`; three-installer end-to-end test in CI. Extension: Publish pre-flight. | Bridge to APM and the ecosystem |
 | M5 | Distribution | Homebrew, signed binaries, `self-update`, platform VSIX on both marketplaces, `doctor`. | People can get it |
 
 ### Acceptance scenarios
@@ -682,7 +685,7 @@ Short-name resolution: `pdf` alone resolves against the current workspace's `tri
 1. `anthropics/skills//pdf` and its GitHub `/tree/…` URL resolve to the same canonical ID and commit.
 2. A skill listed in three catalogs appears as one search result with forks grouped.
 3. An upstream change outside a customized paragraph merges cleanly; an overlapping change produces a conflict in the merge editor and the deployed revision stays intact.
-4. A `review` source never changes a deployment without explicit `update`; `auto` never rewrites a committed lock.
+4. A `review` skill never changes a deployment without explicit `update`; `auto` never rewrites a committed lock.
 5. Linking into a project leaves `git status` clean; `--shadow` followed by `unlink` restores the original byte-for-byte.
 6. An agent using the bundled skill can edit and commit on a branch without prompts, while `add`, `link` and `publish` always require approval.
 7. Publishing a vendored skill with an unknown upstream licence to a public target is blocked; re-publishing never deletes hand-added target files.
@@ -692,20 +695,20 @@ Short-name resolution: `pdf` alone resolves against the current workspace's `tri
 
 | Decision | Rationale | Supersedes (v1 spec) |
 |---|---|---|
-| Workbench for design time; APM for steady state | APM already covers project dependencies across nine agents; the unmet need is discovery, customization and authoring | Full lifecycle manager |
+| New Tricks for design time; APM for steady state | APM already covers project dependencies across nine agents; the unmet need is discovery, customization and authoring | Full lifecycle manager |
 | Build our own; interoperate with APM and `npx skills` | APM is Python without a library API and has no customization model | — |
 | Rust core, CLI first, VS Code extension as sole GUI | Console-first requirement; developer audience lives in VS Code-family editors; built-in diff/merge editors | macOS desktop app |
 | Library + CLI + stdio child process; no daemon, no scheduler | Works in CI and headless; nothing to install at OS level | Background helper, 24 h schedule |
 | Identity = host + repo + `//` + path, Go-style `@ref` | Unique, host-agnostic, mirrors Go/Terraform conventions | Display-name-agnostic catalog IDs |
 | `tricks.toml` / `.lock`, Cargo format, Go semantics | Avoids filename collisions (`skills-lock.json` already means two formats) | — |
-| Workspace repo is the customized copy; New Tricks never pushes it | Removes remote-repo management; user owns git | One private GitHub repo per upstream |
+| Source repo is the customized copy; New Tricks never pushes it | Removes remote-repo management; user owns git | One private GitHub repo per upstream |
 | Vendoring with recorded base; merges left uncommitted | copier/cruft precedent; review through normal git tools | Automatic merge-and-activate |
-| Default update policy `review`; `auto` only for own/org sources; `unsafe-auto` spelled out | Skills are prompts for privileged agents; clean text merges say nothing about behaviour | Automatic by default |
+| Default update policy `review`; `auto` only for own/org repositories; `unsafe-auto` spelled out | Skills are prompts for privileged agents; clean text merges say nothing about behaviour | Automatic by default |
 | Content-addressed store + links | Atomic updates and rollback, no drift, shared across agents | — |
-| Local federated index with adapters | No infrastructure, private sources for free, offline | — |
+| Local federated index with adapters | No infrastructure, private catalogs for free, offline | — |
 | Link for selected agents only; no matrix | Shared directories make per-agent exclusion unreliable; side effects accepted | Requested / discoverable / verified matrix |
 | No adoption of existing installs | Entry via search or explicit import is simpler and sufficient | Discover-and-adopt flow |
-| One version per workspace | Matches `apm.yml` and `marketplace.json` package versions; split workspaces for separate lines | — |
+| One version per source repo | Matches `apm.yml` and `marketplace.json` package versions; split source repos for separate lines | — |
 | Name **New Tricks** (command `tricks`) | `skm` collides with a Homebrew formula and several agent-skill tools; `skillbench` is an existing brand (SkillBench) shipping agent-skill marketplaces; an abstract name leaves room beyond skills | "Skills Manager" |
 | Per-agent `follows_links` with copy fallback; Windows copies | Junction and symlink bugs in Claude Code (Windows) and Copilot (VS Code) | Junctions on Windows |
 | Platform-native, non-hidden data directory | Cursor skips hidden dot-directories | `~/.local/share` everywhere |

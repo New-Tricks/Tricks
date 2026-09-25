@@ -182,13 +182,13 @@ function publish(): void {
   const go = p.doc.getElementById("go") as any;
   assert.strictEqual(go.disabled, false);
   assert.strictEqual(go.textContent, "Publish");
-  (p.doc.getElementById("push") as any).checked = true;
+  // Pushing is the default; a pull request is the alternative, never both.
   go.click();
   assert.deepStrictEqual(p.posted, [{ type: "publish", bump: "minor", push: true, pr: false, acceptCopyleft: false }]);
   (p.doc.querySelector("input[name=bump][value=major]") as any).checked = true;
-  (p.doc.getElementById("pr") as any).checked = true;
+  (p.doc.querySelector("input[name=mode][value=pr]") as any).checked = true;
   go.click();
-  assert.deepStrictEqual(p.posted[1], { type: "publish", bump: "major", push: true, pr: true, acceptCopyleft: false });
+  assert.deepStrictEqual(p.posted[1], { type: "publish", bump: "major", push: false, pr: true, acceptCopyleft: false });
 
   // Failing gates disable publishing.
   const b = publishPage({ ...REPORT, blocked: true, gates: [{ name: "lint", status: "fail", details: ["greeter: NT102 name must be lowercase"] }] });

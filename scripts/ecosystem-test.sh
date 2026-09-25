@@ -16,16 +16,20 @@ trap 'rm -rf "$T"' EXIT
 export TRICKS_HOME="$T/home" TRICKS_CONFIG_DIR="$T/config" TRICKS_DATA_DIR="$T/data" TRICKS_NO_GH=1
 export GIT_AUTHOR_NAME=CI GIT_AUTHOR_EMAIL=ci@example.com GIT_COMMITTER_NAME=CI GIT_COMMITTER_EMAIL=ci@example.com
 mkdir -p "$TRICKS_HOME" "$TRICKS_CONFIG_DIR"
-printf '[settings]\ndefault_sources = false\n' > "$TRICKS_CONFIG_DIR/tricks.toml"
+printf '[settings]\ndefault_catalogs = false\n' > "$TRICKS_CONFIG_DIR/tricks.toml"
 
 pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; exit 1; }
 
-echo "== publish a workspace with tricks ($("$TRICKS" --version))"
+echo "== publish a source repo with tricks ($("$TRICKS" --version))"
+# The distribution repository is a remote (bare, so it accepts pushes); TARGET is a
+# clone of what was published, which the installers below read.
+REMOTE="$T/demo-skills.git"
+git init -q --bare -b main "$REMOTE"
+git clone -q "$REMOTE" "$T/seed" 2>/dev/null
+echo "# demo skills" > "$T/seed/README.md"
+git -C "$T/seed" add -A && git -C "$T/seed" commit -qm init && git -C "$T/seed" push -q origin HEAD:main
 TARGET="$T/demo-skills"
-mkdir -p "$TARGET" && git -C "$TARGET" init -q -b main
-echo "# demo skills" > "$TARGET/README.md"
-git -C "$TARGET" add -A && git -C "$TARGET" commit -qm init
 
 WS="$T/ws"
 mkdir -p "$WS" && git -C "$WS" init -q -b main
@@ -39,12 +43,13 @@ done
 cat >> "$WS/tricks.toml" <<'EOF'
 
 [publish.targets.public]
-repo = "../demo-skills"
+repo = "../demo-skills.git"
 owner = "CI"
 EOF
 git -C "$WS" add -A && git -C "$WS" commit -qm "demo skills"
-(cd "$WS" && "$TRICKS" -q publish public --bump minor --yes >/dev/null)
-[ -f "$TARGET/.claude-plugin/marketplace.json" ] && [ -f "$TARGET/apm.yml" ] && [ "$(git -C "$TARGET" tag)" = "v0.1.0" ] \
+(cd "$WS" && "$TRICKS" -q publish public --bump minor --push --yes >/dev/null)
+git clone -q "$REMOTE" "$TARGET"
+[ -f "$TARGET/.claude-plugin/marketplace.json" ] && [ -f "$TARGET/apm.yml" ] && [ "$(git -C "$REMOTE" tag)" = "v0.1.0" ] \
   && pass "published v0.1.0 with marketplace.json and apm.yml" || fail "publish output incomplete"
 
 echo "== npx skills"

@@ -1,21 +1,21 @@
 import * as path from "path";
 import * as vscode from "vscode";
-import { Model, Placement, WbSkill, WsSkill } from "./model";
+import { Model, Placement, UserSkill, RepoSkill } from "./model";
 
 export class SkillItem extends vscode.TreeItem {
   constructor(
     public readonly skillName: string,
     label: string,
     collapsible: vscode.TreeItemCollapsibleState,
-    public readonly kind: "wsSkill" | "wbSkill" | "detail" | "link",
-    public readonly data?: WsSkill | WbSkill | Placement,
+    public readonly kind: "repoSkill" | "userSkill" | "detail" | "link",
+    public readonly data?: RepoSkill | UserSkill | Placement,
   ) {
     super(label, collapsible);
   }
 }
 
-/** Workspace view: skills with state badges (spec §14). */
-export class WorkspaceTree implements vscode.TreeDataProvider<SkillItem> {
+/** Source repo view: skills with state badges (spec §14). */
+export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
   private readonly emitter = new vscode.EventEmitter<SkillItem | undefined>();
   readonly onDidChangeTreeData = this.emitter.event;
 
@@ -28,11 +28,11 @@ export class WorkspaceTree implements vscode.TreeDataProvider<SkillItem> {
   }
 
   getChildren(e?: SkillItem): SkillItem[] {
-    const ws = this.model.status?.workspace;
+    const ws = this.model.status?.source_repo;
     if (!ws) return [];
     if (!e) {
       return ws.skills.map((s) => {
-        const it = new SkillItem(s.name, s.name, vscode.TreeItemCollapsibleState.Collapsed, "wsSkill", s);
+        const it = new SkillItem(s.name, s.name, vscode.TreeItemCollapsibleState.Collapsed, "repoSkill", s);
         const badges: string[] = [];
         if (s.merge_in_progress) badges.push("merging");
         if (s.update_available) badges.push(`update ${s.update_available}`);
@@ -43,7 +43,7 @@ export class WorkspaceTree implements vscode.TreeDataProvider<SkillItem> {
         if (s.uncommitted) badges.push("uncommitted");
         if (s.branches.length) badges.push(`${s.branches.length} branch${s.branches.length > 1 ? "es" : ""}`);
         it.description = badges.join(" · ");
-        const ctx = ["wsSkill"];
+        const ctx = ["repoSkill"];
         if (s.upstream) ctx.push("vendored");
         if (s.update_available) ctx.push("updateReady");
         if (s.merge_in_progress) ctx.push("merging");
@@ -65,7 +65,7 @@ export class WorkspaceTree implements vscode.TreeDataProvider<SkillItem> {
         return it;
       });
     }
-    const s = e.data as WsSkill;
+    const s = e.data as RepoSkill;
     const d = (label: string, icon: string, cmd?: vscode.Command) => {
       const it = new SkillItem(e.skillName, label, vscode.TreeItemCollapsibleState.None, "detail");
       it.iconPath = new vscode.ThemeIcon(icon);
@@ -90,7 +90,7 @@ export class WorkspaceTree implements vscode.TreeDataProvider<SkillItem> {
   }
 }
 
-/** Installed & Links view: workbench skills and test deployments. */
+/** Installed & Links view: user skills and test deployments. */
 export class InstalledTree implements vscode.TreeDataProvider<SkillItem> {
   private readonly emitter = new vscode.EventEmitter<SkillItem | undefined>();
   readonly onDidChangeTreeData = this.emitter.event;
@@ -104,17 +104,17 @@ export class InstalledTree implements vscode.TreeDataProvider<SkillItem> {
   }
 
   getChildren(e?: SkillItem): SkillItem[] {
-    const st = this.model.status?.workbench;
+    const st = this.model.status?.user;
     if (!st) return [];
     if (!e) {
       const items: SkillItem[] = st.skills.map((s) => {
-        const it = new SkillItem(s.id, s.name || s.id, vscode.TreeItemCollapsibleState.Collapsed, "wbSkill", s);
+        const it = new SkillItem(s.id, s.name || s.id, vscode.TreeItemCollapsibleState.Collapsed, "userSkill", s);
         const bits = [s.ref_name, s.policy];
         if (s.pending) bits.push(`update ${s.pending}`);
         if (s.ahead_of_lock) bits.push("ahead of lock");
         if (s.placements.some((p) => p.health !== "ok")) bits.push("needs attention");
         it.description = bits.join(" · ");
-        it.contextValue = "wbSkill";
+        it.contextValue = "userSkill";
         it.iconPath = new vscode.ThemeIcon(s.pending ? "cloud-download" : "extensions");
         it.tooltip = s.id;
         return it;
@@ -127,8 +127,8 @@ export class InstalledTree implements vscode.TreeDataProvider<SkillItem> {
       }
       return items;
     }
-    if (e.kind === "wbSkill") {
-      return (e.data as WbSkill).placements.map((p) => placementItem(e.skillName, p));
+    if (e.kind === "userSkill") {
+      return (e.data as UserSkill).placements.map((p) => placementItem(e.skillName, p));
     }
     if (e.contextValue === "linksGroup") {
       return st.links.map((p) => placementItem(p.skill, p));
@@ -141,7 +141,7 @@ function placementItem(skill: string, p: Placement): SkillItem {
   const scope = p.scope === "global" ? "global" : path.basename(p.scope);
   const label = `${p.agent} · ${scope}`;
   const it = new SkillItem(skill, label, vscode.TreeItemCollapsibleState.None, "link", p);
-  it.description = `${p.mode}${p.health !== "ok" ? ` · ${p.health}` : ""}${p.origin !== "workbench" ? ` · ${p.origin}` : ""}`;
+  it.description = `${p.mode}${p.health !== "ok" ? ` · ${p.health}` : ""}${p.origin !== "user" ? ` · ${p.origin}` : ""}`;
   it.tooltip = `${p.path}\n${skill}`;
   it.iconPath = new vscode.ThemeIcon(p.health === "ok" ? "pass" : "warning");
   it.resourceUri = vscode.Uri.file(p.path);

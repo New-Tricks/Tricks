@@ -39,7 +39,7 @@ pub struct Found {
     pub natives: Vec<crate::clawhub::Native>,
     /// GitHub repositories and directories fetched on the adapter's thread (filled in
     /// from `repos` and `dirs` before the batch is sent).
-    pub prefetched: Vec<crate::sources::Prefetched>,
+    pub prefetched: Vec<crate::catalogs::Prefetched>,
     pub warnings: Vec<String>,
 }
 
@@ -54,10 +54,10 @@ struct Adapter {
 
 fn adapters() -> [Adapter; 4] {
     [
-        Adapter { key: "skills.sh", label: "skills.sh", query: |gh, q, emit| crate::sources::skills_sh_query(gh, q, 6, emit) },
+        Adapter { key: "skills.sh", label: "skills.sh", query: |gh, q, emit| crate::catalogs::skills_sh_query(gh, q, 6, emit) },
         Adapter { key: crate::tessl::CATALOG, label: "Tessl", query: |gh, q, emit| crate::tessl::query(gh, q, 20, emit) },
         Adapter { key: crate::clawhub::CATALOG, label: "ClawHub", query: |gh, q, emit| crate::clawhub::query(gh, q, 20, emit) },
-        Adapter { key: "github", label: "GitHub code search", query: |gh, q, emit| crate::sources::github_query(gh, q, 5, emit) },
+        Adapter { key: "github", label: "GitHub code search", query: |gh, q, emit| crate::catalogs::github_query(gh, q, 5, emit) },
     ]
 }
 
@@ -76,13 +76,13 @@ pub fn search(ctx: &Ctx, q: &str, enabled: &[String]) {
         .into_iter()
         .filter(|a| enabled.iter().any(|e| e == a.key))
         .filter(|a| a.key != "github" || ctx.gh.token("github.com").is_some())
-        .filter(|a| !crate::sources::live_fresh(ctx, a.key, q).unwrap_or(false))
+        .filter(|a| !crate::catalogs::live_fresh(ctx, a.key, q).unwrap_or(false))
         .collect();
     if run.is_empty() {
         return;
     }
     let gh = &ctx.gh;
-    let claims = Claims { fresh: crate::sources::fresh_index_keys(ctx), taken: Mutex::new(BTreeSet::new()) };
+    let claims = Claims { fresh: crate::catalogs::fresh_index_keys(ctx), taken: Mutex::new(BTreeSet::new()) };
     let claims = &claims;
     let (tx, rx) = mpsc::channel::<Msg>();
     let mut deferred: Vec<(&'static str, Listing)> = Vec::new();
@@ -103,7 +103,7 @@ pub fn search(ctx: &Ctx, q: &str, enabled: &[String]) {
             match msg {
                 Msg::Found(catalog, f) => deferred.extend(apply(ctx, catalog, f).into_iter().map(|l| (catalog, l))),
                 Msg::Done(key, _, Ok(())) => {
-                    let _ = crate::sources::live_mark(ctx, key, q);
+                    let _ = crate::catalogs::live_mark(ctx, key, q);
                 }
                 Msg::Done(_, label, Err(e)) => ctx.ui.warn(&format!("{label}: {e:#}")),
             }
@@ -137,7 +137,7 @@ impl Claims {
 fn prefetch(gh: &GitHub, claims: &Claims, f: &mut Found) {
     let mut jobs: Vec<(SourceId, Option<Vec<String>>)> = Vec::new();
     f.repos.retain(|src| {
-        if !crate::sources::api_indexable(src) {
+        if !crate::catalogs::api_indexable(src) {
             return true;
         }
         if claims.claim(format!("index:{src}")) {
@@ -147,7 +147,7 @@ fn prefetch(gh: &GitHub, claims: &Claims, f: &mut Found) {
     });
     let mut dirs: BTreeMap<SourceId, Vec<String>> = BTreeMap::new();
     f.dirs.retain(|(src, dir)| {
-        if !crate::sources::api_indexable(src) {
+        if !crate::catalogs::api_indexable(src) {
             return true;
         }
         if !claims.skip(&format!("index:{src}")) && claims.claim(format!("index:{src}//{dir}")) {
@@ -156,7 +156,7 @@ fn prefetch(gh: &GitHub, claims: &Claims, f: &mut Found) {
         false
     });
     jobs.extend(dirs.into_iter().map(|(s, d)| (s, Some(d))));
-    f.prefetched = crate::sources::prefetch(gh, jobs);
+    f.prefetched = crate::catalogs::prefetch(gh, jobs);
 }
 
 /// Index a batch and record its listings; returns listings whose skill is not indexed
@@ -167,12 +167,12 @@ fn apply(ctx: &Ctx, catalog: &str, f: Found) -> Vec<Listing> {
     }
     for p in f.prefetched {
         let src = p.src.clone();
-        if let Err(e) = crate::sources::store_prefetched(ctx, p) {
+        if let Err(e) = crate::catalogs::store_prefetched(ctx, p) {
             ctx.ui.warn(&format!("{src}: {e:#}"));
         }
     }
-    crate::sources::ensure_repos_indexed(ctx, &f.repos);
-    crate::sources::ensure_pointers_indexed(ctx, &f.dirs);
+    crate::catalogs::ensure_repos_indexed(ctx, &f.repos);
+    crate::catalogs::ensure_pointers_indexed(ctx, &f.dirs);
     let mut missing = Vec::new();
     for l in f.listings {
         if let Some(l) = list(ctx, catalog, l) {

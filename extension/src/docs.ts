@@ -18,7 +18,7 @@ export function remoteUri(skill: string, path: string): vscode.Uri {
   return vscode.Uri.from({ scheme: SCHEME, path: `/remote/${encodeSegment(skill)}/${path}` });
 }
 
-/** `tricks:/ws/<skill>/<which>/<path>` — base | upstream | head | candidate version of a workspace skill file. */
+/** `tricks:/ws/<skill>/<which>/<path>` — base | upstream | head | candidate version of a source repo skill file. */
 export function versionUri(skill: string, which: string, path: string): vscode.Uri {
   return vscode.Uri.from({ scheme: SCHEME, path: `/ws/${encodeSegment(skill)}/${which}/${path}` });
 }
@@ -50,7 +50,7 @@ export class SkillDocumentProvider implements vscode.TextDocumentContentProvider
         const skill = decodeSegment(parts[1]);
         const which = parts[2];
         const path = parts.slice(3).join("/");
-        const r = await this.client.request("workspace/versionFile", { skill, which, path }, { confirm: false });
+        const r = await this.client.request("sourceRepo/versionFile", { skill, which, path }, { confirm: false });
         if (r.missing) return "";
         return r.binary ? `(binary file, ${r.size} bytes — not shown)` : r.content;
       }

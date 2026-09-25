@@ -1,4 +1,4 @@
-//! M2 acceptance: workbench installs, policies, locks, rollback, links.
+//! M2 acceptance: user installs, policies, locks, rollback, links.
 // Asserts on symlinked placements; Windows deploys copies (spec §8), so these run on Unix.
 #![cfg(unix)]
 
@@ -139,7 +139,7 @@ fn auto_policy_needs_ownership_and_never_rewrites_lock() {
     assert!(std::fs::read_to_string(s.home.join(".claude/skills/deploy/SKILL.md")).unwrap().contains("v2"));
     assert_eq!(std::fs::read_to_string(s.config.join("tricks.lock")).unwrap(), lock_before, "auto must not rewrite the lock");
     let st = s.json(&["status"]);
-    assert_eq!(st["workbench"]["skills"][0]["ahead_of_lock"], true);
+    assert_eq!(st["user"]["skills"][0]["ahead_of_lock"], true);
     // --frozen deploys exactly the lock.
     s.ok(&["install", "--frozen"]);
     assert!(std::fs::read_to_string(s.home.join(".claude/skills/deploy/SKILL.md")).unwrap().contains("v1"));
@@ -213,8 +213,8 @@ fn follows_upstream_renames() {
     assert!(lock.contains("//skills/greetings/hello") && !lock.contains("path = "), "{lock}");
     assert!(std::fs::read_to_string(s.home.join(".claude/skills/hello/SKILL.md")).unwrap().contains("moved"));
     let st = s.json(&["status"]);
-    assert_eq!(st["workbench"]["skills"][0]["id"], "github.com/acme/skills//skills/greetings/hello");
-    assert_eq!(st["workbench"]["skills"][0]["placements"].as_array().unwrap().len(), 2);
+    assert_eq!(st["user"]["skills"][0]["id"], "github.com/acme/skills//skills/greetings/hello");
+    assert_eq!(st["user"]["skills"][0]["placements"].as_array().unwrap().len(), 2);
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn agent_skill_install_and_remove() {
 fn starred_trust_facet() {
     let s = Sandbox::new();
     hello_repo(&s);
-    s.ok(&["source", "add", "acme/skills"]);
+    s.ok(&["catalog", "add", "acme/skills"]);
     let o = s.cmd(&s.root(), &["--json", "search", "--no-live", "hello"]);
     let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(r[0]["trust"], "unknown");
