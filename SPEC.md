@@ -68,7 +68,7 @@ Differentiators no current tool combines:
 | **Store** | Immutable, content-addressed directory of exact skill revisions. |
 | **Link** | A symlink (junction on Windows) from an agent skill directory to a store entry or a dev worktree. |
 | **Target (link)** | A scope — `global` or a project path — plus a set of agents. |
-| **Publish target** | A repository (local checkout) that receives the published skills. |
+| **Publish target** | The distribution repository that receives the published skills, named by its remote (`owner/repo`, a git URL, or a path). New Tricks publishes through its own clone of it. |
 | **B / C / U / R** | B: upstream revision last incorporated. C: the workspace's customized version. U: latest fetched upstream. R: candidate merge of C with U. |
 
 ## 4. Architecture
@@ -227,12 +227,12 @@ path = "skills/deploy-aws"              # local original, no upstream
 ignore = ["NT305"]
 
 [publish.targets.public]
-repo    = "../acme-skills-public"       # local checkout of the target repository
+repo    = "acme/acme-skills-public"     # owner/repo, host/owner/repo, any git URL, or a path
 skills  = ["pdf", "deploy-aws"]
 exclude = ["evals/**", "notes/**", "*.draft.md"]
 
 [publish.targets.internal]
-repo   = "../acme-skills-internal"
+repo   = "git@git.acme.internal:skills/internal.git"
 skills = ["*"]
 ```
 
@@ -552,10 +552,10 @@ Overrides are per skill in `tricks.toml`, require a written justification (e.g. 
 
 ### Target repository behaviour
 
-- The target working tree must be clean.
+- `repo` names the remote, never a working copy. New Tricks keeps its own clone of each target in its data directory and resets it to the remote's default branch before every publish, so nothing left over from an earlier run (or a hand edit) can leak into a release. A relative path is resolved against the workspace root and treated like any other remote, so it has to accept pushes (a bare repository).
 - New Tricks owns only the paths listed in `.tricks-published`; re-publish syncs exactly those (including removals of deselected skills) and never touches hand-added files.
 - Each publish is committed with provenance trailers, e.g. `Tricks-Source: github.com/acme/my-skills@4e1f9a2`.
-- No push by default. `--push` pushes; `--pr` opens a pull request on the target via `gh` for team review.
+- A publish always lands on the remote: `--push` commits, tags and pushes the default branch; `--pr` pushes a `tricks/publish-*` branch and opens a pull request via `gh` for team review. One of the two is required (a commit left in New Tricks' private clone would be invisible); `--dry-run` previews without either.
 
 ### Versioning
 
@@ -574,7 +574,7 @@ Overrides are per skill in `tricks.toml`, require a written justification (e.g. 
 
 ## 12. Agent use of New Tricks
 
-New Tricks ships a `tricks` skill (installed with `tricks init --agent-skill` or offered on first run) teaching the workflow: search → preview → vendor → `edit --branch` → lint → `commit`.
+New Tricks ships a `new-tricks` skill (offered on first run and installed at user scope with `tricks agent-skill`; `tricks init --agent-skill` places it at project scope in the repository being initialized, git-excluded like a test link) teaching the workflow: search → preview → vendor → `edit --branch` → lint → `commit`.
 
 Its `allowed-tools` pre-approves only read-only and branch-confined commands:
 
@@ -629,7 +629,7 @@ Not in v1: agent matrix, eval or metrics dashboards, custom editor, settings UI 
 | Experiment | `edit <skill> [--branch b]`, `commit <skill> -m`, `use <skill>@<branch> [--local]` |
 | Test deploy | `link <skill> (--to <path> \| --global) --agents …`, `unlink [--all]` |
 | Upstream | `pr <skill>` |
-| Publish | `publish <target> [--bump …] [--dry-run] [--push \| --pr]` |
+| Publish | `publish <target> [--bump …] (--dry-run \| --push \| --pr)` |
 | Plumbing | `serve --stdio`, `doctor`, `self-update`, `gc` |
 
 Global flags: `--json` on every read command, `--offline`, `--yes`.

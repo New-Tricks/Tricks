@@ -74,11 +74,11 @@
             "type": "object",
             "required": ["repo"],
             "properties": {
-              "repo": { "type": "string", "description": "Local checkout of the distribution repository." },
+              "repo": { "type": "string", "description": "The distribution repository: owner/repo, host/owner/repo, a git URL, or a path to a repository that accepts pushes." },
               "skills": { "type": "array", "items": { "type": "string" }, "default": ["*"] },
               "exclude": { "type": "array", "items": { "type": "string" }, "description": "Globs relative to each skill directory." },
               "plugins": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } }, "description": "Optional plugin groups for marketplace.json; ungrouped skills go into the default plugin." },
-              "marketplace": { "type": "string", "description": "Marketplace name (kebab-case); defaults to the target directory name." },
+              "marketplace": { "type": "string", "description": "Marketplace name (kebab-case); defaults to the target repository name." },
               "owner": { "type": "string" },
               "description": { "type": "string" }
             }

@@ -29,6 +29,26 @@ fn setup() -> (Sandbox, PathBuf, PathBuf) {
     (s, up, ws)
 }
 
+/// A bare distribution repository at `github.com/<owner>/<name>` holding one README.
+fn publish_remote(s: &Sandbox, owner: &str, name: &str, readme: &str) -> PathBuf {
+    let remote = s.fixtures.join(owner).join(name);
+    std::fs::create_dir_all(&remote).unwrap();
+    git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+    let seed = s.root().join(format!("seed-{name}"));
+    git(&s.root(), &["clone", "-q", remote.to_str().unwrap(), seed.to_str().unwrap()]);
+    write(&seed.join("README.md"), readme);
+    commit_all(&seed, "readme");
+    git(&seed, &["push", "-q", "origin", "HEAD:main"]);
+    remote
+}
+
+/// A fresh clone of a bare remote, to inspect what was pushed.
+fn checkout(s: &Sandbox, remote: &Path) -> PathBuf {
+    let d = tempfile::Builder::new().prefix("check-").tempdir_in(s.root()).unwrap().keep();
+    git(&s.root(), &["clone", "-q", remote.to_str().unwrap(), d.join("c").to_str().unwrap()]);
+    d.join("c")
+}
+
 fn read(p: &Path) -> String {
     std::fs::read_to_string(p).unwrap()
 }
@@ -39,6 +59,23 @@ fn set_interval_zero(s: &Sandbox) {
     if !t.contains("fetch_interval") {
         std::fs::write(&p, t.replace("[settings]", "[settings]\nfetch_interval = \"0s\"")).unwrap();
     }
+}
+
+#[test]
+fn init_agent_skill_is_placed_in_the_repository_not_user_scope() {
+    let s = Sandbox::new();
+    let ws = s.root().join("team-skills");
+    std::fs::create_dir_all(&ws).unwrap();
+    git(&ws, &["init", "-q", "-b", "main"]);
+    let r = s.json_in(&ws, &["init", "--agent-skill"]);
+    let placed: Vec<String> = r["agent_skill"].as_array().unwrap().iter().map(|p| p.as_str().unwrap().to_string()).collect();
+    assert_eq!(placed.len(), 2, "{r}");
+    assert!(placed.iter().all(|p| p.starts_with(ws.to_str().unwrap())), "{placed:?}");
+    assert!(ws.join(".claude/skills/new-tricks/SKILL.md").exists());
+    assert!(!s.home.join(".claude/skills/new-tricks").exists(), "nothing at user scope");
+    // Git-excluded, so the repository stays clean apart from what init itself wrote.
+    let status = git(&ws, &["status", "--porcelain", "--untracked-files=all"]);
+    assert!(!status.contains("new-tricks"), "{status}");
 }
 
 #[test]
@@ -215,15 +252,11 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
         &ws.join("skills/greeter/SKILL.md"),
         &read(&ws.join("skills/greeter/SKILL.md")).replace("---\n\n#", "metadata:\n  tricks-lint-disable: NT203\n---\n\n#"),
     );
-    let target = s.root().join("acme-skills-public");
-    std::fs::create_dir_all(&target).unwrap();
-    git(&target, &["init", "-q", "-b", "main"]);
-    write(&target.join("README.md"), "hand-written readme\n");
-    commit_all(&target, "readme");
+    let remote = publish_remote(&s, "acme", "acme-skills-public", "hand-written readme\n");
     let m = read(&ws.join("tricks.toml"));
     std::fs::write(
         ws.join("tricks.toml"),
-        format!("{m}\n[publish.targets.public]\nrepo = \"../acme-skills-public\"\nskills = [\"*\"]\nexclude = [\"notes/**\"]\n"),
+        format!("{m}\n[publish.targets.public]\nrepo = \"acme/acme-skills-public\"\nskills = [\"*\"]\nexclude = [\"notes/**\"]\n"),
     )
     .unwrap();
     commit_all(&ws, "setup");
@@ -241,14 +274,20 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
 
     // Dirty workspace blocks a real publish.
     write(&ws.join("scratch.txt"), "x");
-    let o = s.cmd(&ws, &["--json", "publish", "public", "--bump", "minor", "--yes"]);
+    let o = s.cmd(&ws, &["--json", "publish", "public", "--bump", "minor", "--push", "--yes"]);
     assert!(!o.status.success());
     std::fs::remove_file(ws.join("scratch.txt")).unwrap();
 
-    let r = s.json_in(&ws, &["publish", "public", "--bump", "minor", "--yes"]);
+    // A real publish has to say where the result goes.
+    let err = s.fail_in(&ws, &["publish", "public", "--bump", "minor", "--yes"]);
+    assert!(err.contains("--push") && err.contains("--pr"), "{err}");
+
+    let r = s.json_in(&ws, &["publish", "public", "--bump", "minor", "--push", "--yes"]);
     assert_eq!(r["blocked"], false, "{r}");
     assert_eq!(r["version"], "0.1.0");
     assert_eq!(r["tag"], "v0.1.0");
+    assert_eq!(r["pushed"], true);
+    let target = checkout(&s, &remote);
     assert!(target.join("skills/hello/SKILL.md").exists());
     assert!(target.join("skills/hello/LICENSE").exists(), "upstream licence carried");
     assert!(!target.join("skills/greeter/notes").exists(), "exclude globs applied");
@@ -264,14 +303,15 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
     assert!(read(&target.join("CHANGELOG.md")).contains("## v0.1.0"));
     let msg = git(&target, &["log", "-1", "--format=%B"]);
     assert!(msg.contains("Tricks-Source:"), "{msg}");
-    assert_eq!(git(&target, &["tag", "--list"]), "v0.1.0");
+    assert_eq!(git(&remote, &["tag", "--list"]), "v0.1.0");
 
     // Re-publish after deselecting a skill: removes it, keeps hand-added files.
     let m = read(&ws.join("tricks.toml")).replace("skills = [\"*\"]", "skills = [\"greeter\"]");
     std::fs::write(ws.join("tricks.toml"), m + "\n[publish.targets.public.plugins]\n").unwrap();
     commit_all(&ws, "only greeter");
-    let r = s.json_in(&ws, &["publish", "public", "--yes"]);
+    let r = s.json_in(&ws, &["publish", "public", "--push", "--yes"]);
     assert_eq!(r["suggested_bump"], "major", "{r}");
+    let target = checkout(&s, &remote);
     assert!(!target.join("skills/hello").exists());
     assert_eq!(read(&target.join("README.md")), "hand-written readme\n");
 }
@@ -280,13 +320,9 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
 fn licence_gate_blocks_proprietary_vendored_skill_unless_overridden() {
     let (s, _up, ws) = setup();
     s.ok_in(&ws, &["vendor", "acme/skills//secret-sauce", "--yes"]);
-    let target = s.root().join("pub");
-    std::fs::create_dir_all(&target).unwrap();
-    git(&target, &["init", "-q", "-b", "main"]);
-    write(&target.join("README.md"), "r\n");
-    commit_all(&target, "r");
+    publish_remote(&s, "acme", "pub", "r\n");
     let m = read(&ws.join("tricks.toml"));
-    std::fs::write(ws.join("tricks.toml"), format!("{m}\n[publish.targets.public]\nrepo = \"../pub\"\nmarketplace = \"acme-pub\"\n"))
+    std::fs::write(ws.join("tricks.toml"), format!("{m}\n[publish.targets.public]\nrepo = \"acme/pub\"\nmarketplace = \"acme-pub\"\n"))
         .unwrap();
     commit_all(&ws, "setup");
     let r = s.json_any_in(&ws, &["publish", "public", "--dry-run"]);

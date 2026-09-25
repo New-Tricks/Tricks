@@ -37,6 +37,10 @@ impl Paths {
     pub fn repos(&self) -> PathBuf {
         self.data_dir.join("repos")
     }
+    /// Clones of publish targets (remotes named in `[publish.targets]`).
+    pub fn publish_clones(&self) -> PathBuf {
+        self.data_dir.join("publish")
+    }
     pub fn work(&self) -> PathBuf {
         self.data_dir.join("work")
     }

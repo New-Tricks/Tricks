@@ -65,13 +65,13 @@ tricks pr skill-creator                               # send your change upstrea
 ```toml
 # tricks.toml
 [publish.targets.public]
-repo    = "../my-skills-public"      # local checkout of the distribution repository
+repo    = "acme/my-skills-public"    # distribution repository: owner/repo, a git URL or a path
 exclude = ["evals/**", "notes/**"]
 ```
 
 ```bash
 tricks publish public --dry-run
-tricks publish public --bump minor [--push | --pr]
+tricks publish public --bump minor --push   # or --pr for a reviewed pull request
 ```
 
 The target gets `skills/<name>/`, a Claude `marketplace.json`, `apm.yml`, `PROVENANCE.md` and `CHANGELOG.md`, and is tagged `vX.Y.Z`. Gates: committed source, zero lint errors, licence policy for vendored skills, leak check, risk diff.

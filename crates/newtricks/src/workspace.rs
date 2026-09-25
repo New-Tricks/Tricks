@@ -156,7 +156,7 @@ const MANIFEST_TEMPLATE: &str = r#"# New Tricks workspace — https://github.com
 ignore = []
 
 # [publish.targets.public]
-# repo    = "../my-skills-public"      # local checkout of the distribution repository
+# repo    = "acme/my-skills-public"    # distribution repository: owner/repo, a git URL or a path
 # skills  = ["*"]
 # exclude = ["evals/**", "notes/**", "*.draft.md"]
 "#;
@@ -218,15 +218,16 @@ pub fn init(ctx: &Ctx, name: Option<&str>, agent_skill: bool) -> Result<InitRepo
     }
     let mut placed = Vec::new();
     if agent_skill {
-        placed = install_agent_skill(ctx, &ws.agents(ctx)?)?;
+        placed = install_agent_skill(ctx, &ws.agents(ctx)?, &Scope::Project(root.clone()))?;
     }
     Ok(InitReport { root: root.to_string_lossy().to_string(), name: ws.name, created, agent_skill: placed })
 }
 
 pub const AGENT_SKILL: &str = include_str!("../assets/new-tricks-skill/SKILL.md");
 
-/// Install the bundled `tricks` agent skill at user scope (spec §12).
-pub fn install_agent_skill(ctx: &Ctx, agents_sel: &[&'static Agent]) -> Result<Vec<String>> {
+/// Install the bundled `new-tricks` agent skill (spec §12): at user scope, or into one
+/// project (`init --agent-skill` places it in the repository being initialized).
+pub fn install_agent_skill(ctx: &Ctx, agents_sel: &[&'static Agent], scope: &Scope) -> Result<Vec<String>> {
     let tmp = tempfile::tempdir()?;
     std::fs::write(tmp.path().join("SKILL.md"), AGENT_SKILL)?;
     let (dir, tree) = store::from_dir(ctx, tmp.path())?;
@@ -238,7 +239,7 @@ pub fn install_agent_skill(ctx: &Ctx, agents_sel: &[&'static Agent]) -> Result<V
                 skill: "bundled:new-tricks".into(),
                 origin: "workbench",
                 agent: a,
-                scope: Scope::Global,
+                scope: scope.clone(),
                 name: "new-tricks".into(),
                 target: dir.clone(),
                 tree: Some(tree.clone()),

@@ -12,7 +12,7 @@ pub enum WsCmd {
     Init {
         #[arg(long)]
         name: Option<String>,
-        /// Also install the bundled `tricks` agent skill
+        /// Also install the bundled `new-tricks` agent skill into this repository (project scope)
         #[arg(long)]
         agent_skill: bool,
     },

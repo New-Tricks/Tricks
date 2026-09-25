@@ -465,7 +465,7 @@ path = "skills/deploy-aws"
 ignore = ["NT305"]
 
 [publish.targets.public]
-repo    = "../acme-skills-public"
+repo    = "acme/acme-skills-public"
 skills  = ["pdf", "deploy-aws"]
 exclude = ["evals/**"]
 

@@ -3,7 +3,7 @@
 
 use crate::agents::{self, Agent};
 use crate::ctx::Ctx;
-use crate::deploy;
+use crate::deploy::{self, Scope};
 use anyhow::Result;
 use serde::Serialize;
 
@@ -41,7 +41,7 @@ pub fn install(ctx: &Ctx, agent_names: &[String]) -> Result<Vec<String>> {
         agents::parse_list(agent_names)?
     };
     mark_offered(ctx)?;
-    crate::workspace::install_agent_skill(ctx, &sel)
+    crate::workspace::install_agent_skill(ctx, &sel, &Scope::Global)
 }
 
 pub fn remove(ctx: &Ctx) -> Result<Vec<String>> {
@@ -64,12 +64,16 @@ pub fn should_offer(ctx: &Ctx) -> Result<bool> {
     Ok(!s.offered && s.installed.is_empty())
 }
 
-/// Refresh installed copies after an upgrade of the binary.
+/// Refresh installed copies after an upgrade of the binary, each in its own scope.
 pub fn refresh_if_outdated(ctx: &Ctx) -> Result<usize> {
-    let s = status(ctx)?;
-    if s.installed.is_empty() || !s.outdated {
+    if !status(ctx)?.outdated {
         return Ok(0);
     }
-    let sel: Vec<&'static Agent> = s.installed.iter().filter_map(|(a, _)| agents::get(a).ok()).collect();
-    Ok(crate::workspace::install_agent_skill(ctx, &sel)?.len())
+    let mut n = 0;
+    for p in ctx.state.placements("WHERE skill=?1", &[&KEY])? {
+        if let Ok(a) = agents::get(&p.agent) {
+            n += crate::workspace::install_agent_skill(ctx, &[a], &Scope::from_key(&p.scope))?.len();
+        }
+    }
+    Ok(n)
 }
