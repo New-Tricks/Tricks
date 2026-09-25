@@ -11,7 +11,7 @@ discover ─► create / vendor ─► edit on a branch ─► link & try with a
 ## Install
 
 ```bash
-brew install new-tricks/tap/newtricks
+brew install new-tricks/tap/tricks
 cargo install --path crates/newtricks          # from a checkout
 ```
 

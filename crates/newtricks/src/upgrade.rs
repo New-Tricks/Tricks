@@ -49,7 +49,7 @@ pub fn run(ctx: &Ctx, check_only: bool) -> Result<UpgradeReport> {
             current,
             latest: None,
             updated: false,
-            message: "installed with Homebrew: run `brew upgrade newtricks`".into(),
+            message: "installed with Homebrew: run `brew upgrade tricks`".into(),
         });
     }
     let in_extension = (exe_s.contains("/extensions/") || exe_s.contains("\\extensions\\"))
