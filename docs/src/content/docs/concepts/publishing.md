@@ -121,7 +121,7 @@ my-skills-public/
 - **`skills/<name>/`** holds each skill as it is in your source repo, minus `exclude` matches and leftover `.upstream` merge files. The only change to `SKILL.md` is in `metadata`: New Tricks-only `tricks-*` keys (such as `tricks-lint-disable`) are removed, and on a versioned publish `version` is set.
 - **`.claude-plugin/marketplace.json`** lists one plugin containing every skill by default (`"source": "./"`, `"strict": false`), so Claude Code loads everything under `skills/` without a `plugin.json`.
 - **`apm.yml`** carries metadata only (`name`, `version`, `description`, and `license` when your source repo has a root licence). APM installs skills without it; it gives APM users a package name and version.
-- **`PROVENANCE.md`** is a table of each skill's upstream, base commit and licence, and the source commit published.
+- **`PROVENANCE.md`** is a table of each skill's upstream, base commit and licence, and the source commit published. The source repo is named by its `origin` remote with any credentials removed, or `local:<folder>` when it has none; a local path never appears, here or in the `Tricks-Source:` commit trailer.
 - **`CHANGELOG.md`** gets a new section per publish, built from your source repo's commit subjects since the last publish, grouped by skill.
 
 To split skills into several plugins, add groups. Skills not in any group stay in the default plugin:

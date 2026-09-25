@@ -197,7 +197,7 @@ tricks update --continue          # checks no markers remain, records the new ba
 git commit -am "Merge upstream skill-creator"
 ```
 
-`--continue` refuses while markers remain (`unresolved conflicts remain: SKILL.md (conflict markers)`). `tricks update --abort` restores your version exactly as it was before the update. Only one upstream update can be in progress per source repo; `tricks list` marks it `UPDATE IN PROGRESS`.
+`--continue` refuses while markers remain (`unresolved conflicts remain: SKILL.md (conflict markers)`). `tricks update --abort` restores your version exactly as it was before the update. `update` exits with status 1 when it stops on conflicts or a skill fails (a `--dry-run` that finds conflicts doesn't), so scripts and CI notice. Only one upstream update can be in progress per source repo; `tricks list` marks it `UPDATE IN PROGRESS`.
 
 Conflicts that markers can't express are reported by kind:
 
