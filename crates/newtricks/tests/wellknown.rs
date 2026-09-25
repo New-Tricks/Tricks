@@ -86,7 +86,7 @@ fn wellknown_skill_md_and_archives() {
     // Try them in a project.
     let proj = s.project("app");
     for n in ["tarred", "zipped", "single"] {
-        s.ok_in(&proj, &["link", &id(n), "--agents", "claude"]);
+        s.ok_in(&proj, &["try", &id(n), "--agents", "claude"]);
     }
     let skills = proj.join(".claude/skills");
     assert!(skills.join("tarred/scripts/run.sh").exists());
@@ -112,12 +112,12 @@ fn wellknown_skill_md_and_archives() {
     );
     let cfg = s.config.join("tricks.toml");
     std::fs::write(&cfg, read(&cfg).replace("[settings]", "[settings]\nfetch_interval = \"0s\"")).unwrap();
-    let o = s.json_in(&ws, &["merge", "--dry-run"]);
+    let o = s.json_in(&ws, &["outdated"]);
     assert_eq!(o["items"][0]["state"], "update-available", "{o}");
-    s.ok_in(&ws, &["merge"]);
+    s.ok_in(&ws, &["sync"]);
     assert!(read(&ws.join("skills/tarred/SKILL.md")).contains("tarred v2"));
     commit_all(&ws, "merge tarred");
-    assert_eq!(s.json_in(&ws, &["merge", "--dry-run"])["items"][0]["state"], "up-to-date");
+    assert_eq!(s.json_in(&ws, &["outdated"])["items"][0]["state"], "up-to-date");
 }
 
 #[test]

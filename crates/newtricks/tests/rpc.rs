@@ -71,10 +71,10 @@ fn serve_stdio_roundtrip() {
     let r = call(1, "initialize", json!({}));
     assert!(r["result"]["version"].is_string());
     assert!(r["result"]["source_repo"]["root"].is_string(), "{r}");
-    let r = call(2, "show", json!({"skill":"acme/skills//hello"}));
+    let r = call(2, "info", json!({"skill":"acme/skills//hello"}));
     assert_eq!(r["result"]["canonical"], "github.com/acme/skills//skills/hello@v1.0.0", "{r}");
     // Try an upstream skill in a project.
-    let r = call(3, "link", json!({"skill":"acme/skills//hello","to": proj,"agents":["claude"]}));
+    let r = call(3, "try", json!({"skill":"acme/skills//hello","to": proj,"agents":["claude"]}));
     assert_eq!(r["result"]["links"][0]["placements"].as_array().unwrap().len(), 1, "{r}");
     assert_eq!(r["result"]["links"][0]["trial"], true);
     // Vendoring a proprietary skill needs confirmation: the error carries the details.
@@ -83,9 +83,9 @@ fn serve_stdio_roundtrip() {
     assert!(r["error"]["data"]["details"].to_string().contains("Proprietary"), "{r}");
     let r = call(5, "sourceRepo/vendor", json!({"skill":"acme/skills//secret","yes": true}));
     assert_eq!(r["result"]["name"], "secret", "{r}");
-    let r = call(6, "sourceRepo/merge", json!({"dryRun": true}));
+    let r = call(6, "sourceRepo/outdated", json!({}));
     assert_eq!(r["result"]["items"][0]["state"], "up-to-date", "{r}");
-    let r = call(7, "status", json!({}));
+    let r = call(7, "list", json!({}));
     assert_eq!(r["result"]["source_repo"]["skills"][0]["name"], "secret", "{r}");
     assert_eq!(r["result"]["links"].as_array().unwrap().len(), 1, "{r}");
     let r = call(8, "nope", json!({}));

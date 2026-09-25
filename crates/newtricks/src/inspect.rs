@@ -1,4 +1,4 @@
-//! `show` and preview: read any skill (remote or local) without executing anything.
+//! `info` and `view`: read any skill (remote or local) without executing anything.
 
 use crate::config::LicenseRecord;
 use crate::ctx::Ctx;
@@ -61,7 +61,7 @@ pub struct FileEntry {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ShowReport {
+pub struct InfoReport {
     pub id: String,
     pub canonical: String,
     pub name: String,
@@ -72,6 +72,8 @@ pub struct ShowReport {
     pub tree: String,
     pub frontmatter: Option<String>,
     pub frontmatter_error: Option<String>,
+    /// Kept for callers in-process; `view` shows the content.
+    #[serde(skip)]
     pub body: String,
     pub files: Vec<FileEntry>,
     pub license: LicenseRecord,
@@ -115,7 +117,7 @@ struct Origin {
     tree: String,
 }
 
-fn report(ctx: &Ctx, o: Origin, dir: &Path, license: LicenseRecord) -> Result<ShowReport> {
+fn report(ctx: &Ctx, o: Origin, dir: &Path, license: LicenseRecord) -> Result<InfoReport> {
     let text = std::fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
     let doc = SkillDoc::parse(&text);
     let risk = RiskReport::scan_dir(dir);
@@ -137,7 +139,7 @@ fn report(ctx: &Ctx, o: Origin, dir: &Path, license: LicenseRecord) -> Result<Sh
     let signals = crate::index::skill_signals(ctx, &id);
     let mut risk_summary = risk.summary();
     risk_summary.extend(crate::index::signal_risks(&signals));
-    Ok(ShowReport {
+    Ok(InfoReport {
         canonical: o.canonical,
         name: o.name,
         description: doc.description.clone(),
@@ -208,7 +210,7 @@ fn hosted_dir(ctx: &Ctx, spec: &crate::id::SkillSpec) -> Result<Option<(Origin, 
     }
 }
 
-pub fn show(ctx: &Ctx, input: &str) -> Result<ShowReport> {
+pub fn info(ctx: &Ctx, input: &str) -> Result<InfoReport> {
     let spec = crate::lookup::spec_from_input(ctx, input)?;
     if let Some((o, dir)) = hosted_dir(ctx, &spec)? {
         let license = crate::hosted::license(&o.id, &dir);

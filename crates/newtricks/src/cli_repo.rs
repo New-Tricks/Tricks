@@ -1,8 +1,8 @@
-//! Source repo commands: start, work, validate and ship.
+//! Source repo commands: skills in the repo, work on them, upstream, validate and ship.
 
 use crate::cli::{Cmd, emit, short};
 use crate::ctx::Ctx;
-use crate::source_repo::{self, MergeReport, RepoStatus};
+use crate::source_repo::{self, RepoStatus, SourceRepo, SyncReport};
 use anyhow::{Result, bail};
 use serde::Serialize;
 
@@ -17,25 +17,34 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                     println!("  agent skill → {p}");
                 }
                 if r.created {
-                    println!("next: `tricks vendor owner/repo//skill` or `tricks new my-skill`, then `tricks link`");
+                    println!("next: `tricks create <name>` or `tricks vendor owner/repo//skill`, then `tricks link`");
                 }
             });
         }
-        Cmd::New { name, description } => {
+        Cmd::Create { name, description, from } => {
             let ws = source_repo::require(ctx)?;
-            let r = source_repo::new_skill(&ws, &name, description.as_deref())?;
-            emit(json, &r, |r| println!("created {} — edit {}/SKILL.md, then `tricks link {}`", r.name, r.path, r.name));
+            let r = source_repo::create(ctx, &ws, &name, description.as_deref(), from.as_deref())?;
+            emit(json, &r, |r| {
+                println!("created {} at {}", r.name, r.path);
+                println!("  not committed yet; edit {}/SKILL.md, then `tricks link {}` to try it", r.path, r.name);
+            });
         }
-        Cmd::Vendor { skill, name, path, upstream, base } => {
+        Cmd::Vendor { skill, name, path, from, base } => {
             let ws = source_repo::require(ctx)?;
-            let o = source_repo::VendorOptions {
-                name: name.as_deref(),
-                path: path.as_deref(),
-                upstream: upstream.as_deref(),
-                base: base.as_deref(),
-            };
+            let o =
+                source_repo::VendorOptions { name: name.as_deref(), path: path.as_deref(), from: from.as_deref(), base: base.as_deref() };
             let r = source_repo::vendor(ctx, &ws, &skill, &o)?;
             emit(json, &r, print_vendor);
+        }
+        Cmd::Remove { skill } => {
+            let ws = source_repo::require(ctx)?;
+            let r = source_repo::remove(ctx, &ws, &skill)?;
+            emit(json, &r, |r| {
+                println!("removed {} ({}); not committed yet", r.name, r.path);
+                for p in &r.unlinked {
+                    println!("  unlinked {p}");
+                }
+            });
         }
         Cmd::Lint { skills, fix, strict } => {
             let one_path = skills.len() == 1 && std::path::Path::new(&skills[0]).join("SKILL.md").is_file();
@@ -81,7 +90,23 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Cmd::Edit { skill, branch, done } => {
+        Cmd::Edit { skill, branch, commit, message, done } => {
+            if commit {
+                let r = source_repo::commit_draft(ctx, &skill, message.as_deref().unwrap_or_default())?;
+                emit(json, &r, |r| match &r.commit {
+                    Some(c) => println!(
+                        "committed {} {} on {}{}",
+                        r.name,
+                        short(c),
+                        r.branch,
+                        r.agent.as_deref().map(|a| format!(" (Tricks-Agent: {a})")).unwrap_or_default()
+                    ),
+                    None => println!("nothing to commit for {} on {}", r.name, r.branch),
+                });
+                if !done {
+                    return Ok(());
+                }
+            }
             let r = if done { source_repo::edit_done(ctx, &skill)? } else { source_repo::edit(ctx, &skill, branch.as_deref())? };
             emit(json, &r, |r| {
                 if r.vendored {
@@ -91,7 +116,10 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                 if done {
                     eprintln!("finished editing `{}`; links deploy its active variant", r.name);
                 } else if let Some(b) = &r.branch {
-                    eprintln!("editing `{}` on branch {b}; commit there with git, then `tricks edit {} --done`", r.name, r.name);
+                    eprintln!(
+                        "editing `{}` on branch {b}; commit drafts with `tricks edit {} --commit -m \"…\"`, then `tricks merge {}@{b}`",
+                        r.name, r.name, r.name
+                    );
                 }
                 for p in &r.placements {
                     eprintln!("  → {p}");
@@ -112,23 +140,10 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                 }
             });
         }
-        Cmd::Merge { skill, dry_run, cont, abort } => {
+        Cmd::Diff { skill, range } => {
             let ws = source_repo::require(ctx)?;
-            let o = source_repo::MergeOptions { only: skill.as_deref(), dry_run, cont, abort };
-            let r = source_repo::merge(ctx, &ws, &o)?;
-            emit(json, &r, |r| if dry_run { print_merge_check(r) } else { print_merge(r) });
-        }
-        Cmd::Diff { skill, from, to } => {
-            let ws = source_repo::require(ctx)?;
-            let files = source_repo::changed_files(ctx, &ws, &skill, &from, &to)?;
-            let mut out = Vec::new();
-            for f in &files {
-                let a = source_repo::version_file(ctx, &ws, &skill, &from, f)?.unwrap_or_default();
-                let b = source_repo::version_file(ctx, &ws, &skill, &to, f)?.unwrap_or_default();
-                let (sa, sb) = (String::from_utf8_lossy(&a), String::from_utf8_lossy(&b));
-                let d = similar::TextDiff::from_lines(sa.as_ref(), sb.as_ref());
-                out.push((f.clone(), d.unified_diff().header(&format!("{from}/{f}"), &format!("{to}/{f}")).to_string()));
-            }
+            let (from, to) = parse_range(range.as_deref())?;
+            let out = unified(ctx, &ws, &skill, &from, &to)?;
             emit(json, &out, |out| {
                 if out.is_empty() {
                     println!("no differences between {from} and {to}");
@@ -137,6 +152,62 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                     print!("{d}");
                 }
             });
+        }
+        Cmd::Merge { spec, whole_branch, pr, message } => {
+            let o = source_repo::MergeOptions { whole_branch, pr, message: message.as_deref() };
+            let r = source_repo::merge_branch(ctx, &spec, &o)?;
+            emit(json, &r, |r| {
+                let what = if r.mode == "branch" { format!("branch {}", r.branch) } else { format!("{} from {}", r.name, r.branch) };
+                if let Some(u) = &r.pr_url {
+                    println!("pull request for {what} into {}: {u}", r.into);
+                } else if !r.conflicts.is_empty() {
+                    println!("merging {what} into {} stopped on conflicts:", r.into);
+                    for c in &r.conflicts {
+                        println!("    CONFLICT {c}");
+                    }
+                    println!("  resolve them, then commit with git{}", if r.mode == "branch" { " (`git merge --continue`)" } else { "" });
+                } else if let Some(c) = &r.commit {
+                    println!("merged {what} into {} ({})", r.into, short(c));
+                    for p in &r.placements {
+                        println!("  → {p}");
+                    }
+                }
+                if !r.other_paths.is_empty() {
+                    println!(
+                        "  note: {} also changes {} file(s) outside {} (not merged; use --whole-branch to include them)",
+                        r.branch,
+                        r.other_paths.len(),
+                        r.name
+                    );
+                }
+            });
+        }
+        Cmd::Outdated { skill, diff } => {
+            let ws = source_repo::require(ctx)?;
+            let r = source_repo::outdated(ctx, &ws, skill.as_deref())?;
+            let diffs = if diff { diffs_for(ctx, &ws, &r, "base", "upstream") } else { vec![] };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "items": r.items, "diffs": diffs }))?);
+            } else {
+                print_outdated(&r);
+                print_diffs(&diffs);
+            }
+        }
+        Cmd::Sync { skill, dry_run, cont, abort } => {
+            let ws = source_repo::require(ctx)?;
+            let o = source_repo::SyncOptions { only: skill.as_deref(), dry_run, cont, abort };
+            let r = source_repo::sync(ctx, &ws, &o)?;
+            if dry_run {
+                let diffs = diffs_for(ctx, &ws, &r, "working", "candidate");
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "items": r.items, "diffs": diffs }))?);
+                } else {
+                    print_outdated(&r);
+                    print_diffs(&diffs);
+                }
+            } else {
+                emit(json, &r, print_sync);
+            }
         }
         Cmd::Contribute { skill, title, body, dry_run } => {
             let r = crate::contribute::contribute(ctx, &skill, title.as_deref(), body.as_deref(), dry_run)?;
@@ -162,6 +233,56 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
     Ok(())
 }
 
+/// `a..b`, `a..` (to working), `..b` (from head), `a` (a..working); default head..working.
+fn parse_range(range: Option<&str>) -> Result<(String, String)> {
+    let (a, b) = match range {
+        None => ("", ""),
+        Some(r) => match r.split_once("..") {
+            Some((a, b)) => (a, b),
+            None => (r, ""),
+        },
+    };
+    let a = if a.is_empty() { "head" } else { a };
+    let b = if b.is_empty() { "working" } else { b };
+    for v in [a, b] {
+        match v {
+            "upstream" | "U" => bail!("compare with upstream using `tricks outdated <skill> --diff`"),
+            "candidate" | "R" => bail!("preview the upstream sync with `tricks sync <skill> --dry-run`"),
+            _ => {}
+        }
+    }
+    Ok((a.to_string(), b.to_string()))
+}
+
+/// (file, unified diff) for every file that differs between two versions of a skill.
+fn unified(ctx: &Ctx, ws: &SourceRepo, skill: &str, from: &str, to: &str) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for f in source_repo::changed_files(ctx, ws, skill, from, to)? {
+        let a = source_repo::version_file(ctx, ws, skill, from, &f)?.unwrap_or_default();
+        let b = source_repo::version_file(ctx, ws, skill, to, &f)?.unwrap_or_default();
+        let (sa, sb) = (String::from_utf8_lossy(&a), String::from_utf8_lossy(&b));
+        let d = similar::TextDiff::from_lines(sa.as_ref(), sb.as_ref());
+        out.push((f.clone(), d.unified_diff().header(&format!("{from}/{skill}/{f}"), &format!("{to}/{skill}/{f}")).to_string()));
+    }
+    Ok(out)
+}
+
+fn diffs_for(ctx: &Ctx, ws: &SourceRepo, r: &SyncReport, from: &str, to: &str) -> Vec<(String, Vec<(String, String)>)> {
+    r.items
+        .iter()
+        .filter(|i| i.state == "update-available")
+        .map(|i| (i.name.clone(), unified(ctx, ws, &i.name, from, to).unwrap_or_else(|e| vec![(String::new(), format!("error: {e:#}\n"))])))
+        .collect()
+}
+
+fn print_diffs(diffs: &[(String, Vec<(String, String)>)]) {
+    for (_, files) in diffs {
+        for (_, d) in files {
+            print!("{d}");
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct RepoSummary {
     pub name: String,
@@ -170,32 +291,41 @@ pub struct RepoSummary {
 }
 
 #[derive(Debug, Serialize)]
-pub struct Status {
+pub struct List {
     /// The source repo containing the current directory.
     pub source_repo: Option<RepoStatus>,
-    pub links: Vec<crate::links::LinkInfo>,
     /// Registered source repos (from the user config).
     pub repos: Vec<RepoSummary>,
-    /// Skills still deployed by New Tricks 0.2 user-scope installs.
-    pub legacy: usize,
+    pub links: Vec<crate::links::LinkInfo>,
     pub unfinished_operations: Vec<String>,
 }
 
-pub fn status(ctx: &Ctx) -> Result<Status> {
+pub fn list(ctx: &Ctx) -> Result<List> {
     let source_repo = source_repo::current(ctx)?.map(|w| source_repo::status(ctx, &w)).transpose()?;
-    Ok(Status {
+    Ok(List {
         source_repo,
-        links: crate::links::list(ctx)?,
         repos: source_repo::all_source_repos(ctx)?
             .into_iter()
             .map(|w| RepoSummary { name: w.name.clone(), root: w.root.to_string_lossy().to_string(), skills: w.manifest.skills.len() })
             .collect(),
-        legacy: crate::links::legacy(ctx)?.len(),
+        links: crate::links::list(ctx)?,
         unfinished_operations: ctx.state.unfinished_ops()?.into_iter().map(|(_, op, d)| format!("{op} {d}")).collect(),
     })
 }
 
-pub fn print_status(s: &Status) {
+pub fn print_list(s: &List, links: bool) {
+    if links {
+        if s.links.is_empty() {
+            println!("no links; `tricks link` links your source repo's skills, `tricks try <skill>` tries one from elsewhere");
+        }
+        for l in &s.links {
+            let h = if l.health == "ok" { String::new() } else { format!("  !! {}", l.health) };
+            let skill = l.skill.strip_prefix("github.com/").unwrap_or(&l.skill);
+            let skill = skill.rsplit_once("//").filter(|_| skill.starts_with("ws:")).map(|(_, n)| n).unwrap_or(skill);
+            println!("{:<6} {:<8} {} → {} ({}){}", l.kind, l.agent, l.path, skill, l.mode, h);
+        }
+        return;
+    }
     match &s.source_repo {
         Some(w) => print_repo_status(w),
         None if s.repos.is_empty() => println!("no source repos yet; run `tricks init` in a git repository"),
@@ -206,17 +336,9 @@ pub fn print_status(s: &Status) {
             }
         }
     }
-    if !s.links.is_empty() {
-        println!("links:");
-        for l in &s.links {
-            let h = if l.health == "ok" { String::new() } else { format!("  !! {}", l.health) };
-            let skill = l.skill.strip_prefix("github.com/").unwrap_or(&l.skill);
-            let skill = skill.rsplit_once("//").filter(|_| skill.starts_with("ws:")).map(|(_, n)| n).unwrap_or(skill);
-            println!("  {:<8} {} → {} ({}, {}){}", l.agent, l.path, skill, l.kind, l.mode, h);
-        }
-    }
-    if s.legacy > 0 {
-        println!("{} skill(s) installed at user scope by New Tricks 0.2 are no longer managed; see `tricks doctor`", s.legacy);
+    let trials = s.links.iter().filter(|l| l.kind == "trial").count();
+    if trials > 0 {
+        println!("{trials} trial link(s); see `tricks list --links`");
     }
     for u in &s.unfinished_operations {
         println!("interrupted operation: {u} (re-run the command to recover)");
@@ -237,9 +359,9 @@ fn print_vendor(r: &source_repo::VendorReport) {
     println!("  not committed yet: review and `git commit` when ready; `tricks link {}` to try it", r.name);
 }
 
-fn print_merge(r: &MergeReport) {
+fn print_sync(r: &SyncReport) {
     if r.items.is_empty() {
-        println!("no vendored skills to merge");
+        println!("no vendored skills to sync");
     }
     for i in &r.items {
         let to = i.to_ref.clone().or(i.to.as_deref().map(|c| short(c).to_string())).unwrap_or_default();
@@ -270,7 +392,7 @@ fn print_merge(r: &MergeReport) {
     }
 }
 
-fn print_merge_check(r: &MergeReport) {
+fn print_outdated(r: &SyncReport) {
     let mut any = false;
     for i in &r.items {
         if i.state == "up-to-date" {
@@ -308,7 +430,7 @@ pub fn print_repo_status(w: &RepoStatus) {
             notes.push(format!("upstream has {u}"));
         }
         if s.merge_in_progress {
-            notes.push("MERGE IN PROGRESS".into());
+            notes.push("SYNC IN PROGRESS".into());
         }
         if s.uncommitted {
             notes.push("uncommitted".into());
@@ -324,6 +446,9 @@ pub fn print_repo_status(w: &RepoStatus) {
         }
         if !s.branches.is_empty() {
             notes.push(format!("branches: {}", s.branches.join(", ")));
+        }
+        if s.dev_links > 0 {
+            notes.push(format!("{} link(s)", s.dev_links));
         }
         println!("  {:<22} {}", s.name, notes.join(" · "));
     }

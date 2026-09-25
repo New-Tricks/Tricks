@@ -16,7 +16,8 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const DEFAULT_REPOS: &[&str] = &[
+/// Catalogs written into a new user config (and restored by `catalog add --recommended`).
+pub const RECOMMENDED: &[&str] = &[
     "github.com/anthropics/skills",
     "github.com/openai/skills",
     "github.com/vercel-labs/agent-skills",
@@ -61,8 +62,6 @@ impl Kind {
 pub struct Catalog {
     pub key: String,
     pub kind: Kind,
-    pub default: bool,
-    pub disabled: bool,
     pub last_indexed: Option<i64>,
     pub skills: i64,
 }
@@ -80,21 +79,13 @@ fn classify_key(key: &str, entry: &CatalogEntry) -> Result<Kind> {
     Ok(Kind::Repo)
 }
 
-/// All configured catalogs (user config + defaults).
+/// The catalogs in the user config.
 pub fn list(ctx: &Ctx) -> Result<Vec<Catalog>> {
     let m = crate::user::config(ctx)?;
     let mut out: BTreeMap<String, Catalog> = BTreeMap::new();
-    if m.settings.default_catalogs {
-        for r in DEFAULT_REPOS {
-            out.insert(
-                r.to_string(),
-                Catalog { key: r.to_string(), kind: Kind::Repo, default: true, disabled: false, last_indexed: None, skills: 0 },
-            );
-        }
-    }
     for (k, e) in &m.catalogs {
         let kind = classify_key(k, e)?;
-        out.insert(k.clone(), Catalog { key: k.clone(), kind, default: false, disabled: e.disabled, last_indexed: None, skills: 0 });
+        out.insert(k.clone(), Catalog { key: k.clone(), kind, last_indexed: None, skills: 0 });
     }
     for s in out.values_mut() {
         s.last_indexed = ctx.state.fetched_at(&format!("index:{}", s.key))?;
@@ -134,10 +125,26 @@ pub fn add(ctx: &Ctx, input: &str, kind: Option<&str>) -> Result<(String, Kind)>
     let (key, k) = normalize_input(ctx, input, kind)?;
     let path = ctx.paths.user_config();
     let mut doc = config::load_doc(&path)?;
-    let entry = CatalogEntry { kind: if k == Kind::Repo { None } else { Some(k.as_str().into()) }, url: None, disabled: false };
+    let entry = CatalogEntry { kind: if k == Kind::Repo { None } else { Some(k.as_str().into()) }, url: None };
     config::table_mut(&mut doc, &["catalogs"]).insert(&key, config::to_inline(&entry)?);
     config::save_doc(&path, &doc)?;
     Ok((key, k))
+}
+
+/// Add the recommended catalogs that are missing from the user config.
+pub fn add_recommended(ctx: &Ctx) -> Result<Vec<String>> {
+    let m = crate::user::config(ctx)?;
+    let path = ctx.paths.user_config();
+    let mut doc = config::load_doc(&path)?;
+    let mut added = Vec::new();
+    for r in RECOMMENDED {
+        if !m.catalogs.contains_key(*r) {
+            config::table_mut(&mut doc, &["catalogs"]).insert(r, config::to_inline(&CatalogEntry::default())?);
+            added.push(r.to_string());
+        }
+    }
+    config::save_doc(&path, &doc)?;
+    Ok(added)
 }
 
 pub fn remove(ctx: &Ctx, input: &str) -> Result<String> {
@@ -149,11 +156,7 @@ pub fn remove(ctx: &Ctx, input: &str) -> Result<String> {
     };
     let path = ctx.paths.user_config();
     let mut doc = config::load_doc(&path)?;
-    if DEFAULT_REPOS.contains(&key.as_str()) && !m.catalogs.contains_key(&key) {
-        // Disable a default catalog.
-        let entry = CatalogEntry { disabled: true, ..Default::default() };
-        config::table_mut(&mut doc, &["catalogs"]).insert(&key, config::to_inline(&entry)?);
-    } else if config::table_mut(&mut doc, &["catalogs"]).remove(&key).is_none() {
+    if config::table_mut(&mut doc, &["catalogs"]).remove(&key).is_none() {
         bail!("no catalog `{input}`");
     }
     config::save_doc(&path, &doc)?;
@@ -186,7 +189,7 @@ pub fn refresh(ctx: &Ctx, force: bool, only: Option<&str>) -> Result<RefreshRepo
     let mut repo_jobs = Vec::new();
     let mut rest = Vec::new();
     for s in list(ctx)? {
-        if s.disabled || only.map(|o| o != s.key).unwrap_or(false) {
+        if only.map(|o| o != s.key).unwrap_or(false) {
             continue;
         }
         if !force && !ctx.state.is_stale(&format!("index:{}", s.key), interval)? {

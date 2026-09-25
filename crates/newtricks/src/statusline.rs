@@ -18,7 +18,7 @@ pub fn line(ctx: &Ctx) -> Result<String> {
             parts.push(format!("editing {editing}"));
         }
     }
-    let links: i64 = c.query_row("SELECT COUNT(*) FROM placements WHERE origin IN ('link','source-repo')", [], |r| r.get(0))?;
+    let links: i64 = c.query_row("SELECT COUNT(*) FROM placements WHERE origin IN ('source-repo','trial','link')", [], |r| r.get(0))?;
     if links > 0 {
         parts.push(format!("{links} link{}", if links == 1 { "" } else { "s" }));
     }
