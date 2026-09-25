@@ -24,13 +24,15 @@ fn info_shows_metadata_and_view_shows_content() {
     assert!(!human.contains("Be **kind**"), "{human}");
 
     // Not a terminal: the file is printed as is (agents and pipes get plain Markdown).
-    let raw = s.ok(&["view", "acme/skills//hello"]);
+    // (Line endings normalized: git may check files out with CRLF on Windows.)
+    let lf = |t: String| t.replace("\r\n", "\n");
+    let raw = lf(s.ok(&["view", "acme/skills//hello"]));
     assert!(raw.starts_with("---\nname: hello") && raw.contains("Be **kind**."), "{raw}");
-    let tone = s.ok(&["view", "acme/skills//hello", "references/tone.md"]);
+    let tone = lf(s.ok(&["view", "acme/skills//hello", "references/tone.md"]));
     assert_eq!(tone, "# Tone\n\nWarm.\n");
     let j = s.json(&["view", "acme/skills//hello", "references/tone.md"]);
     assert_eq!(j["path"], "references/tone.md");
-    assert_eq!(j["content"], "# Tone\n\nWarm.\n");
+    assert_eq!(lf(j["content"].as_str().unwrap().to_string()), "# Tone\n\nWarm.\n");
 }
 
 #[test]
