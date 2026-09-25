@@ -110,7 +110,6 @@ pub enum RepoCmd {
     /// Allow publishing a vendored skill whose licence would block it (requires a reason)
     AllowLicense { skill: String, justification: String },
     /// List registered source repos
-    #[command(alias = "workspaces")]
     SourceRepos,
 }
 

@@ -70,8 +70,6 @@ Differentiators no current tool combines:
 | **Publish target** | The distribution repository that receives the published skills, named by its remote (`owner/repo`, a git URL, or a path). New Tricks publishes through its own clone of it. |
 | **B / C / U / R** | B: upstream revision last incorporated. C: the source repo's customized version. U: latest fetched upstream. R: candidate merge of C with U. |
 
-Earlier drafts used *workbench* for user scope, *workspace* for a source repo and *source* for a catalog. The CLI and config still accept the old spellings (`tricks source`, `tricks workspaces`, `[sources]`, `[workspaces]`, `[workspace]`, `default_sources`) and rewrite them on the next write.
-
 ## 4. Architecture
 
 ```

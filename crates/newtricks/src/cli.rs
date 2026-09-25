@@ -44,7 +44,7 @@ pub struct SearchArgs {
     #[arg(long)]
     pub license: Option<String>,
     /// Only skills listed in this catalog (or from this repository)
-    #[arg(long = "catalog", alias = "source")]
+    #[arg(long = "catalog")]
     pub source: Option<String>,
     #[arg(long)]
     pub owner: Option<String>,
@@ -95,7 +95,7 @@ pub enum Cmd {
         file: Option<String>,
     },
     /// Manage the catalogs search draws on
-    #[command(subcommand, alias = "source")]
+    #[command(subcommand)]
     Catalog(CatalogCmd),
     /// Install a skill at user scope for agents
     Add {

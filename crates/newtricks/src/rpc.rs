@@ -141,7 +141,7 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
                 agent: s(p, "agent").map(String::from),
                 trust: s(p, "trust").map(String::from),
                 license: s(p, "license").map(String::from),
-                source: s(p, "catalog").or(s(p, "source")).map(String::from),
+                source: s(p, "catalog").map(String::from),
                 owner: s(p, "owner").map(String::from),
                 category: s(p, "category").map(String::from),
                 installed: b(p, "installed"),

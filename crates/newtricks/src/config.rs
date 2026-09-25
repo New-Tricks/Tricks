@@ -56,7 +56,6 @@ impl Policy {
 pub struct Settings {
     pub agents: Vec<String>,
     pub fetch_interval: String,
-    #[serde(alias = "default_sources")]
     pub default_catalogs: bool,
     /// Live-query catalogs consulted on each search.
     pub live: Vec<String>,
@@ -121,9 +120,9 @@ impl UserSkill {
 pub struct UserManifest {
     #[serde(default)]
     pub settings: Settings,
-    #[serde(default, rename = "source-repos", alias = "workspaces")]
+    #[serde(default, rename = "source-repos")]
     pub source_repos: BTreeMap<String, String>,
-    #[serde(default, alias = "sources")]
+    #[serde(default)]
     pub catalogs: BTreeMap<String, CatalogEntry>,
     #[serde(default)]
     pub skills: BTreeMap<String, UserSkill>,
@@ -273,7 +272,7 @@ pub struct PublishConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SourceRepoManifest {
-    #[serde(default, rename = "source-repo", alias = "workspace")]
+    #[serde(default, rename = "source-repo")]
     pub source_repo: RepoSettings,
     #[serde(default)]
     pub skills: BTreeMap<String, RepoSkill>,
@@ -359,31 +358,8 @@ pub fn load_doc(path: &Path) -> Result<DocumentMut> {
     if !path.exists() {
         return Ok(DocumentMut::new());
     }
-    let s = rename_legacy_keys(&std::fs::read_to_string(path)?);
+    let s = std::fs::read_to_string(path)?;
     s.parse::<DocumentMut>().with_context(|| format!("parsing {}", path.display()))
-}
-
-/// Keys from before the rename to catalogs and source repos. They are still read (serde
-/// aliases), and rewritten in place, keeping their position, whenever tricks edits a file.
-const LEGACY_KEYS: &[(&str, &str)] =
-    &[("sources", "catalogs"), ("workspaces", "source-repos"), ("workspace", "source-repo"), ("default_sources", "default_catalogs")];
-
-fn rename_legacy_keys(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for line in text.split_inclusive('\n') {
-        let indent = &line[..line.len() - line.trim_start().len()];
-        let rest = line.trim_start();
-        let renamed = LEGACY_KEYS.iter().find_map(|(old, new)| {
-            let header = rest.strip_prefix('[').and_then(|r| r.strip_prefix(old)).filter(|r| r.starts_with(']') || r.starts_with('.'));
-            if let Some(r) = header {
-                return Some(format!("{indent}[{new}{r}"));
-            }
-            let key = rest.strip_prefix(old).filter(|r| r.trim_start().starts_with('='))?;
-            (*old == "default_sources").then(|| format!("{indent}{new}{key}"))
-        });
-        out.push_str(renamed.as_deref().unwrap_or(line));
-    }
-    out
 }
 
 pub fn save_doc(path: &Path, doc: &DocumentMut) -> Result<()> {

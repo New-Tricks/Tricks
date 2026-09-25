@@ -85,8 +85,6 @@ impl State {
         if !has_signals {
             conn.execute_batch("ALTER TABLE listings ADD COLUMN signals TEXT")?;
         }
-        // Placement origins renamed with the move to "user" and "source repo".
-        conn.execute_batch("UPDATE placements SET origin='user' WHERE origin='workbench'; UPDATE placements SET origin='source-repo' WHERE origin='workspace';")?;
         Ok(State { conn })
     }
 

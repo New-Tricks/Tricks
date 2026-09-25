@@ -15,14 +15,11 @@
         "agents": { "type": "array", "items": { "$ref": "#/definitions/agent" }, "description": "Default agents for `add` and dev deployments." },
         "fetch_interval": { "type": "string", "pattern": "^[0-9]+[smhd]$", "default": "24h", "description": "Minimum time between fetches of a repository or catalog." },
         "default_catalogs": { "type": "boolean", "default": true, "description": "Index the built-in default catalogs." },
-        "default_sources": { "type": "boolean", "deprecated": true, "description": "Deprecated: renamed to `default_catalogs`." },
         "live": { "type": "array", "items": { "type": "string", "enum": ["skills.sh", "tessl", "clawhub", "github"] }, "description": "Live-query catalogs consulted on each search." }
       },
       "additionalProperties": false
     },
     "source-repos": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Registered source repos: name = path." },
-    "workspaces": { "type": "object", "additionalProperties": { "type": "string" }, "deprecated": true, "description": "Deprecated: renamed to `[source-repos]`." },
-    "sources": { "type": "object", "deprecated": true, "description": "Deprecated: renamed to `[catalogs]`." },
     "catalogs": {
       "type": "object",
       "description": "Search catalogs keyed by repository, site URL or pointer file.",
@@ -43,7 +40,6 @@
       },
       "additionalProperties": false
     },
-    "workspace": { "type": "object", "deprecated": true, "description": "Deprecated: renamed to `[source-repo]`." },
     "skills": {
       "type": "object",
       "description": "User config: canonical id → install request. Source repo: skill name → path/upstream.",

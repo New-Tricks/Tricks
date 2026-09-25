@@ -79,28 +79,6 @@ fn init_agent_skill_is_placed_in_the_repository_not_user_scope() {
 }
 
 #[test]
-fn configs_written_before_the_rename_still_work_and_are_rewritten_in_place() {
-    let (s, _up, ws) = setup();
-    // Old spellings in the user config and the source repo manifest.
-    let user = s.config.join("tricks.toml");
-    std::fs::write(&user, read(&user).replace("default_catalogs", "default_sources").replace("[source-repos]", "[workspaces]")).unwrap();
-    std::fs::write(ws.join("tricks.toml"), read(&ws.join("tricks.toml")).replace("[source-repo]", "[workspace]\nname = \"legacy\""))
-        .unwrap();
-    let st = s.json_in(&ws, &["status"]);
-    assert_eq!(st["source_repo"]["name"], "legacy", "{st}");
-    let repos = s.json_in(&ws, &["workspaces"]);
-    assert_eq!(repos[0]["name"], "legacy", "{repos}");
-    // Old command spelling, and the next write renames the keys where they stand.
-    s.ok_in(&ws, &["source", "add", "acme/skills"]);
-    let u = read(&user);
-    assert!(u.contains("[catalogs]") && u.contains("[source-repos]") && u.contains("default_catalogs"), "{u}");
-    assert!(!u.contains("[sources]") && !u.contains("[workspaces]") && !u.contains("default_sources"), "{u}");
-    s.ok_in(&ws, &["new", "greeter", "--description", "Writes greetings. Use when the user asks for a greeting."]);
-    let m = read(&ws.join("tricks.toml"));
-    assert!(m.contains("[source-repo]\nname = \"legacy\"") && !m.contains("[workspace]"), "{m}");
-}
-
-#[test]
 fn init_vendor_and_block_class_confirmation() {
     let (s, _up, ws) = setup();
     assert!(read(&ws.join(".gitignore")).contains("tricks.work.toml"));
