@@ -125,7 +125,6 @@ pub fn place(ctx: &Ctx, req: &PlaceRequest) -> Result<Placement> {
         created_at: now(),
     };
     ctx.state.insert_placement(&p)?;
-    ctx.state.record_deployment(&p.skill, &p.agent, &p.scope, p.tree.as_deref(), p.commit.as_deref(), mode, "place")?;
     Ok(p)
 }
 
@@ -204,7 +203,6 @@ pub fn remove_placement(ctx: &Ctx, p: &Placement) -> Result<()> {
         }
     }
     ctx.state.delete_placement(p.id)?;
-    ctx.state.record_deployment(&p.skill, &p.agent, &p.scope, p.tree.as_deref(), p.commit.as_deref(), &p.mode, "remove")?;
     Ok(())
 }
 

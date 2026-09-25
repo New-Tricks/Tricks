@@ -1,5 +1,5 @@
 //! Turning user input into skill specs: canonical/short IDs, URLs (with slash-branch
-//! resolution) and bare names (user installs, then the search index).
+//! resolution) and bare names (looked up in the search index).
 
 use crate::ctx::Ctx;
 use crate::id::{Normalized, SkillSpec, normalize_url};
@@ -29,24 +29,16 @@ pub fn spec_from_input(ctx: &Ctx, input: &str) -> Result<SkillSpec> {
     if input.contains("//") {
         return SkillSpec::parse(input);
     }
-    // Bare name: installed skills first, then the index.
+    // Bare name: look it up in the index.
     let (name, reference) = match input.rsplit_once('@') {
         Some((n, r)) => (n, Some(r.to_string())),
         None => (input, None),
     };
-    let lock = crate::config::UserLock::load(&ctx.paths.user_lock())?;
-    let installed: Vec<&crate::config::LockedSkill> =
-        lock.skills.iter().filter(|s| s.name == name || s.id.rsplit('/').next() == Some(name)).collect();
-    if installed.len() == 1 {
-        let mut s = SkillSpec::parse(&installed[0].id)?;
-        s.reference = reference;
-        return Ok(s);
-    }
     let mut st = ctx.state.conn.prepare("SELECT id, description FROM skills WHERE name=?1 OR folder=?1 ORDER BY (name=?1) DESC")?;
     let rows: Vec<(String, String)> =
         st.query_map(params![name], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?.collect::<Result<_, _>>()?;
     let pick = match rows.len() {
-        0 => bail!("no skill named `{name}` is installed or indexed; try `tricks search {name}` or use owner/repo//{name}"),
+        0 => bail!("no skill named `{name}` is indexed; try `tricks search {name}` or use owner/repo//{name}"),
         1 => 0,
         _ => {
             let opts: Vec<String> = rows.iter().map(|(id, d)| format!("{id} — {}", d.chars().take(70).collect::<String>())).collect();

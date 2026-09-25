@@ -147,7 +147,7 @@ pub fn open_mirror(ctx: &Ctx, src: &SourceId, fetch: Fetch) -> Result<Mirror> {
         }
         return Mirror::open(&ctx.paths, src, false);
     }
-    let interval = crate::user::load_manifest(ctx)?.fetch_interval();
+    let interval = crate::user::config(ctx)?.fetch_interval();
     let do_fetch = match fetch {
         Fetch::Always => true,
         Fetch::Never => false,

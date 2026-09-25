@@ -1,4 +1,4 @@
-//! M3/M4 acceptance: source repo authoring, upstream merges, variants, lint, publish, pr.
+//! M3/M4 acceptance: source repo authoring, upstream merges, variants, lint, publish, contribute.
 // Asserts on symlinked placements; Windows deploys copies (spec §8), so these run on Unix.
 #![cfg(unix)]
 
@@ -49,10 +49,6 @@ fn checkout(s: &Sandbox, remote: &Path) -> PathBuf {
     d.join("c")
 }
 
-fn read(p: &Path) -> String {
-    std::fs::read_to_string(p).unwrap()
-}
-
 fn set_interval_zero(s: &Sandbox) {
     let p = s.config.join("tricks.toml");
     let t = read(&p);
@@ -97,6 +93,16 @@ fn init_vendor_and_block_class_confirmation() {
     // Search/show report vendored state.
     let sh = s.json_in(&ws, &["show", "acme/skills//hello"]);
     assert_eq!(sh["vendored"], true);
+    // A local folder copied from upstream earlier: vendored with its upstream and base.
+    let base = git(&_up, &["rev-parse", "v1.0.0"]);
+    let copy = s.root().join("elsewhere/hello-copy");
+    write(&copy.join("SKILL.md"), &read(&ws.join("skills/hello/SKILL.md")).replace("name: hello", "name: hello-copy"));
+    let r = s.json_in(&ws, &["vendor", copy.to_str().unwrap(), "--upstream", "acme/skills//hello", "--base", &base]);
+    assert_eq!(r["name"], "hello-copy", "{r}");
+    assert_eq!(r["upstream"], "github.com/acme/skills//skills/hello");
+    assert_eq!(r["base"], base.as_str());
+    let err = s.fail_in(&ws, &["vendor", "acme/skills//hello", "--name", "again", "--base", &base]);
+    assert!(err.contains("local folder"), "{err}");
 }
 
 #[test]
@@ -109,7 +115,7 @@ fn clean_merge_preserves_customization_and_is_left_uncommitted() {
     std::fs::write(&p, read(&p).replace("Intro paragraph.", "My custom intro.")).unwrap();
     commit_all(&ws, "customize intro");
     // Dev-link it so we can check that deployments stay on the committed version.
-    s.ok_in(&ws, &["install", "--agents", "claude"]);
+    s.ok_in(&ws, &["link", "--agents", "claude"]);
     let deployed = s.home.join(".claude/skills/hello/SKILL.md");
     assert!(read(&deployed).contains("My custom intro."));
     // Upstream changes a different paragraph and adds a file.
@@ -119,13 +125,17 @@ fn clean_merge_preserves_customization_and_is_left_uncommitted() {
     commit_all(&up, "upstream improvements");
     git(&up, &["tag", "v1.1.0"]);
     set_interval_zero(&s);
-    let out = s.json_in(&ws, &["outdated"]);
+    let out = s.json_in(&ws, &["merge", "--dry-run"]);
     assert_eq!(out["items"][0]["state"], "update-available", "{out}");
+    assert!(out["items"][0]["incoming"].to_string().contains("tips.md"), "{out}");
+    assert!(git(&ws, &["status", "--porcelain"]).is_empty(), "--dry-run changes nothing");
+    let st = s.json_in(&ws, &["status"]);
+    assert_eq!(st["source_repo"]["skills"][0]["update_available"], "v1.1.0", "{st}");
     // C → R preview: shows what the merge would produce without touching the working tree.
     let cand = s.json_in(&ws, &["diff", "hello", "--from", "working", "--to", "candidate"]).to_string();
     assert!(cand.contains("friendly") && cand.contains("tips.md"), "{cand}");
     assert!(git(&ws, &["status", "--porcelain"]).is_empty(), "candidate must not modify the working tree");
-    let r = s.json_in(&ws, &["update", "hello"]);
+    let r = s.json_in(&ws, &["merge", "hello"]);
     assert_eq!(r["items"][0]["state"], "merged", "{r}");
     let merged = read(&p);
     assert!(merged.contains("My custom intro.") && merged.contains("Keep it short and friendly."), "{merged}");
@@ -136,7 +146,11 @@ fn clean_merge_preserves_customization_and_is_left_uncommitted() {
     assert!(read(&ws.join("tricks.lock")).contains(&up_head));
     // Agents keep the committed version until the merge is committed.
     assert!(!read(&deployed).contains("friendly"), "deployment changed before commit");
-    s.ok_in(&ws, &["commit", "hello", "-m", "merge upstream v1.1.0"]);
+    s.ok_in(&ws, &["status"]);
+    assert!(!read(&deployed).contains("friendly"), "still on the committed version while uncommitted");
+    // Commit with plain git; the next tricks command returns agents to the working tree.
+    commit_all(&ws, "merge upstream v1.1.0");
+    s.ok_in(&ws, &["status"]);
     assert!(read(&deployed).contains("friendly"), "deployment did not resume after commit");
     // Diff views: B→C shows only my customization.
     let d = s.json_in(&ws, &["diff", "hello", "--from", "base", "--to", "working"]);
@@ -157,21 +171,21 @@ fn overlapping_change_conflicts_then_continue_or_abort() {
     git(&up, &["tag", "v1.1.0"]);
     set_interval_zero(&s);
     let lock_before = read(&ws.join("tricks.lock"));
-    let r = s.json_in(&ws, &["update"]);
+    let r = s.json_in(&ws, &["merge"]);
     assert_eq!(r["items"][0]["state"], "conflicts", "{r}");
     assert!(read(&p).contains("<<<<<<<"));
     assert_eq!(read(&ws.join("tricks.lock")), lock_before, "base must not move while conflicted");
-    // Another update refuses while a merge is in progress.
-    let err = s.fail_in(&ws, &["update"]);
+    // Another merge refuses while one is in progress.
+    let err = s.fail_in(&ws, &["merge"]);
     assert!(err.contains("in progress"), "{err}");
     // --continue refuses with markers present.
-    let err = s.fail_in(&ws, &["update", "--continue"]);
+    let err = s.fail_in(&ws, &["merge", "--continue"]);
     assert!(err.contains("unresolved"), "{err}");
     // Abort restores my version.
-    s.ok_in(&ws, &["update", "--abort"]);
+    s.ok_in(&ws, &["merge", "--abort"]);
     assert!(read(&p).contains("Keep it VERY short.") && !read(&p).contains("<<<<<<<"));
     // Redo and resolve.
-    s.ok_in(&ws, &["update"]);
+    s.ok_in(&ws, &["merge"]);
     let resolved = read(&p)
         .lines()
         .filter(|l| !l.starts_with("<<<<<<<") && !l.starts_with("=======") && !l.starts_with(">>>>>>>") && !l.contains("Keep it brief."))
@@ -179,47 +193,35 @@ fn overlapping_change_conflicts_then_continue_or_abort() {
         .join("\n")
         + "\n";
     std::fs::write(&p, resolved).unwrap();
-    s.ok_in(&ws, &["update", "--continue"]);
+    s.ok_in(&ws, &["merge", "--continue"]);
     assert!(read(&ws.join("tricks.lock")).contains(&git(&up, &["rev-parse", "HEAD"])));
 }
 
 #[test]
-fn branch_experiments_variants_and_agent_trailers() {
+fn branch_experiments_and_variants() {
     let (s, _up, ws) = setup();
     s.ok_in(
         &ws,
         &["new", "greeter", "--description", "Writes greetings for any occasion. Use when the user asks for a greeting card text."],
     );
     commit_all(&ws, "new greeter");
-    s.ok_in(&ws, &["install", "--agents", "claude"]);
+    s.ok_in(&ws, &["link", "--agents", "claude"]);
     let deployed = s.home.join(".claude/skills/greeter");
     let target = std::fs::read_link(&deployed).unwrap();
     assert_eq!(target, ws.join("skills/greeter"), "dev link points at the live checkout");
     // Edit on a branch → worktree, dev link flips to it.
     let out = s.json_in(&ws, &["edit", "greeter", "--branch", "terse"]);
     let path = PathBuf::from(out["path"].as_str().unwrap());
+    let worktree = PathBuf::from(out["worktree"].as_str().unwrap());
     assert!(path.join("SKILL.md").exists());
     assert_eq!(std::fs::read_link(&deployed).unwrap(), path);
     std::fs::write(path.join("SKILL.md"), read(&path.join("SKILL.md")).replace("## Instructions", "## Instructions (terse)")).unwrap();
-    // Commit as an agent.
-    let o = {
-        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_tricks"));
-        c.args(["--json", "commit", "greeter", "-m", "terse variant"])
-            .current_dir(&ws)
-            .env("TRICKS_HOME", &s.home)
-            .env("TRICKS_CONFIG_DIR", &s.config)
-            .env("TRICKS_DATA_DIR", &s.data)
-            .env("TRICKS_NO_GH", "1")
-            .env("CLAUDECODE", "1")
-            .env("GIT_AUTHOR_NAME", "T")
-            .env("GIT_AUTHOR_EMAIL", "t@e")
-            .env("GIT_COMMITTER_NAME", "T")
-            .env("GIT_COMMITTER_EMAIL", "t@e");
-        c.output().unwrap()
-    };
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let msg = git(&ws, &["log", "-1", "--format=%B", "terse"]);
-    assert!(msg.contains("Tricks-Agent: claude-code"), "{msg}");
+    // Commit on the branch with git, then finish editing.
+    commit_all(&worktree, "terse variant");
+    let done = s.json_in(&ws, &["edit", "greeter", "--done"]);
+    assert_eq!(done["branch"], "terse", "{done}");
+    let err = s.fail_in(&ws, &["edit", "greeter", "--done"]);
+    assert!(err.contains("not being edited"), "{err}");
     // Back on the main checkout.
     assert_eq!(std::fs::read_link(&deployed).unwrap(), ws.join("skills/greeter"));
     // Use the variant: store snapshot of the branch tip.
@@ -329,7 +331,12 @@ fn licence_gate_blocks_proprietary_vendored_skill_unless_overridden() {
     assert_eq!(r["blocked"], true);
     let lic = r["gates"].as_array().unwrap().iter().find(|g| g["name"] == "licence").unwrap().clone();
     assert_eq!(lic["status"], "fail", "{lic}");
-    s.ok_in(&ws, &["allow-license", "secret-sauce", "We hold a separate redistribution agreement with Acme."]);
+    assert!(lic["details"].to_string().contains("license-override"), "the gate says how to override: {lic}");
+    let m = read(&ws.join("tricks.toml")).replace(
+        "[skills.secret-sauce]\n",
+        "[skills.secret-sauce]\nlicense-override = { justification = \"We hold a separate redistribution agreement with Acme.\" }\n",
+    );
+    std::fs::write(ws.join("tricks.toml"), m).unwrap();
     commit_all(&ws, "override");
     let r = s.json_in(&ws, &["publish", "public", "--dry-run"]);
     let lic = r["gates"].as_array().unwrap().iter().find(|g| g["name"] == "licence").unwrap().clone();
@@ -337,7 +344,7 @@ fn licence_gate_blocks_proprietary_vendored_skill_unless_overridden() {
 }
 
 #[test]
-fn pr_dry_run_contains_only_the_customization() {
+fn contribute_dry_run_contains_only_the_customization() {
     let (s, up, ws) = setup();
     s.ok_in(&ws, &["vendor", "acme/skills//hello"]);
     let p = ws.join("skills/hello/SKILL.md");
@@ -347,11 +354,35 @@ fn pr_dry_run_contains_only_the_customization() {
     let up_md = up.join("skills/hello/SKILL.md");
     std::fs::write(&up_md, read(&up_md).replace("Intro paragraph.", "Intro paragraph, revised.")).unwrap();
     commit_all(&up, "upstream edit");
-    let r = s.json_in(&ws, &["pr", "hello", "--dry-run"]);
+    let r = s.json_in(&ws, &["contribute", "hello", "--dry-run"]);
     assert_eq!(r["files"].as_array().unwrap().len(), 1, "{r}");
     let wt = PathBuf::from(r["worktree"].as_str().unwrap());
     let content = read(&wt.join("skills/hello/SKILL.md"));
     assert!(content.contains("3. Smile.") && content.contains("revised"), "{content}");
     let diff = git(&wt, &["show", "--stat", "HEAD"]);
     assert!(diff.contains("skills/hello/SKILL.md") && !diff.contains("tricks"), "{diff}");
+}
+
+#[test]
+fn merge_follows_an_upstream_rename() {
+    let (s, up, ws) = setup();
+    s.ok_in(&ws, &["vendor", "acme/skills//hello@main"]);
+    commit_all(&ws, "vendor hello");
+    // Upstream reorganizes: skills/hello → skills/greetings/hello, and edits it.
+    std::fs::create_dir_all(up.join("skills/greetings")).unwrap();
+    git(&up, &["mv", "skills/hello", "skills/greetings/hello"]);
+    let md = up.join("skills/greetings/hello/SKILL.md");
+    std::fs::write(&md, read(&md).replace("Keep it short.", "Keep it short. Moved.")).unwrap();
+    commit_all(&up, "reorganize");
+    set_interval_zero(&s);
+    let r = s.json_in(&ws, &["merge"]);
+    assert_eq!(r["items"][0]["state"], "merged", "{r}");
+    assert!(read(&ws.join("skills/hello/SKILL.md")).contains("Moved."));
+    assert!(read(&ws.join("tricks.lock")).contains("upstream_path = \"skills/greetings/hello\""), "{}", read(&ws.join("tricks.lock")));
+    commit_all(&ws, "merge");
+    // The next check follows the new path.
+    let out = s.json_in(&ws, &["merge", "--dry-run"]);
+    assert_eq!(out["items"][0]["state"], "up-to-date", "{out}");
+    let d = s.json_in(&ws, &["diff", "hello", "--from", "base", "--to", "working"]);
+    assert!(d.as_array().unwrap().is_empty(), "{d}");
 }

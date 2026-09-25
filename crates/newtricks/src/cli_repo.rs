@@ -1,122 +1,15 @@
-//! SourceRepo, experiment and publish commands.
+//! Source repo commands: start, work, validate and ship.
 
-use crate::cli::{emit, short};
+use crate::cli::{Cmd, emit, short};
 use crate::ctx::Ctx;
-use crate::source_repo::{self, RepoInstallReport, RepoStatus, RepoUpdateReport};
+use crate::source_repo::{self, MergeReport, RepoStatus};
 use anyhow::{Result, bail};
-use clap::Subcommand;
+use serde::Serialize;
 
-#[derive(Subcommand)]
-pub enum RepoCmd {
-    /// Make the current git repository a source repo
-    Init {
-        #[arg(long)]
-        name: Option<String>,
-        /// Also install the bundled `new-tricks` agent skill into this repository (project scope)
-        #[arg(long)]
-        agent_skill: bool,
-    },
-    /// Copy an upstream skill into the source repo to customize it
-    Vendor {
-        skill: String,
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long)]
-        path: Option<String>,
-    },
-    /// Import a skill from a local folder
-    Import {
-        folder: String,
-        #[arg(long)]
-        name: Option<String>,
-        /// Link it to an upstream skill it was copied from
-        #[arg(long)]
-        upstream: Option<String>,
-        /// Upstream commit the copy started from (required with --upstream)
-        #[arg(long)]
-        base: Option<String>,
-    },
-    /// Scaffold a new skill
-    New {
-        name: String,
-        #[arg(long)]
-        description: Option<String>,
-    },
-    /// Lint source repo skills (or a skill directory)
-    Lint {
-        skills: Vec<String>,
-        #[arg(long)]
-        fix: bool,
-        /// Frontmatter keys outside the Agent Skills spec are errors (like `skills-ref`)
-        #[arg(long)]
-        strict: bool,
-    },
-    /// Edit a skill (optionally on a branch); flips its deployment to dev mode
-    Edit {
-        skill: String,
-        #[arg(long, short = 'b')]
-        branch: Option<String>,
-    },
-    /// Commit a skill's changes and return its deployment to the active variant
-    Commit {
-        skill: String,
-        #[arg(long, short = 'm')]
-        message: String,
-    },
-    /// Choose which branch variant of a skill is deployed
-    Use {
-        /// name@branch (or name with --reset)
-        spec: String,
-        /// Machine-local override (tricks.work.toml)
-        #[arg(long)]
-        local: bool,
-        #[arg(long)]
-        reset: bool,
-    },
-    /// Show changes between versions of a source repo skill
-    Diff {
-        skill: String,
-        /// base | upstream | head | working | candidate (the merge result, not yet applied)
-        #[arg(long, default_value = "base")]
-        from: String,
-        #[arg(long, default_value = "working")]
-        to: String,
-    },
-    /// Open a pull request with your change to the upstream skill
-    Pr {
-        skill: String,
-        #[arg(long)]
-        title: Option<String>,
-        #[arg(long)]
-        body: Option<String>,
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Publish source repo skills to a distribution repository
-    Publish {
-        target: String,
-        /// major | minor | patch | <version>
-        #[arg(long)]
-        bump: Option<String>,
-        #[arg(long)]
-        dry_run: bool,
-        #[arg(long)]
-        push: bool,
-        #[arg(long)]
-        pr: bool,
-        #[arg(long)]
-        accept_copyleft: bool,
-    },
-    /// Allow publishing a vendored skill whose licence would block it (requires a reason)
-    AllowLicense { skill: String, justification: String },
-    /// List registered source repos
-    SourceRepos,
-}
-
-pub fn run(ctx: &Ctx, c: RepoCmd) -> Result<()> {
+pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
     let json = ctx.opts.json;
     match c {
-        RepoCmd::Init { name, agent_skill } => {
+        Cmd::Init { name, agent_skill } => {
             let r = source_repo::init(ctx, name.as_deref(), agent_skill)?;
             emit(json, &r, |r| {
                 println!("{} source repo `{}` at {}", if r.created { "created" } else { "registered" }, r.name, r.root);
@@ -124,26 +17,27 @@ pub fn run(ctx: &Ctx, c: RepoCmd) -> Result<()> {
                     println!("  agent skill → {p}");
                 }
                 if r.created {
-                    println!("next: `tricks vendor owner/repo//skill` or `tricks new my-skill`");
+                    println!("next: `tricks vendor owner/repo//skill` or `tricks new my-skill`, then `tricks link`");
                 }
             });
         }
-        RepoCmd::Vendor { skill, name, path } => {
-            let ws = source_repo::require(ctx)?;
-            let r = source_repo::vendor(ctx, &ws, &skill, name.as_deref(), path.as_deref())?;
-            emit(json, &r, print_vendor);
-        }
-        RepoCmd::Import { folder, name, upstream, base } => {
-            let ws = source_repo::require(ctx)?;
-            let r = source_repo::import(ctx, &ws, &folder, name.as_deref(), upstream.as_deref(), base.as_deref())?;
-            emit(json, &r, print_vendor);
-        }
-        RepoCmd::New { name, description } => {
+        Cmd::New { name, description } => {
             let ws = source_repo::require(ctx)?;
             let r = source_repo::new_skill(&ws, &name, description.as_deref())?;
-            emit(json, &r, |r| println!("created {} — edit {}/SKILL.md", r.name, r.path));
+            emit(json, &r, |r| println!("created {} — edit {}/SKILL.md, then `tricks link {}`", r.name, r.path, r.name));
         }
-        RepoCmd::Lint { skills, fix, strict } => {
+        Cmd::Vendor { skill, name, path, upstream, base } => {
+            let ws = source_repo::require(ctx)?;
+            let o = source_repo::VendorOptions {
+                name: name.as_deref(),
+                path: path.as_deref(),
+                upstream: upstream.as_deref(),
+                base: base.as_deref(),
+            };
+            let r = source_repo::vendor(ctx, &ws, &skill, &o)?;
+            emit(json, &r, print_vendor);
+        }
+        Cmd::Lint { skills, fix, strict } => {
             let one_path = skills.len() == 1 && std::path::Path::new(&skills[0]).join("SKILL.md").is_file();
             let ws = source_repo::current(ctx)?;
             let mut rep = match (&ws, one_path) {
@@ -187,36 +81,24 @@ pub fn run(ctx: &Ctx, c: RepoCmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        RepoCmd::Edit { skill, branch } => {
-            let r = source_repo::edit(ctx, &skill, branch.as_deref())?;
+        Cmd::Edit { skill, branch, done } => {
+            let r = if done { source_repo::edit_done(ctx, &skill)? } else { source_repo::edit(ctx, &skill, branch.as_deref())? };
             emit(json, &r, |r| {
                 if r.vendored {
                     println!("vendored {} into the source repo", r.name);
                 }
                 println!("{}", r.path);
-                if let Some(b) = &r.branch {
-                    eprintln!("editing `{}` on branch {b}; commit with `tricks commit {} -m \"…\"`", r.name, r.name);
+                if done {
+                    eprintln!("finished editing `{}`; links deploy its active variant", r.name);
+                } else if let Some(b) = &r.branch {
+                    eprintln!("editing `{}` on branch {b}; commit there with git, then `tricks edit {} --done`", r.name, r.name);
                 }
                 for p in &r.placements {
-                    eprintln!("  dev → {p}");
+                    eprintln!("  → {p}");
                 }
             });
         }
-        RepoCmd::Commit { skill, message } => {
-            let r = source_repo::commit(ctx, &skill, &message)?;
-            emit(json, &r, |r| {
-                match &r.commit {
-                    Some(c) => {
-                        println!("committed {} {}{}", r.name, short(c), r.branch.as_deref().map(|b| format!(" on {b}")).unwrap_or_default())
-                    }
-                    None => println!("nothing to commit for {}", r.name),
-                }
-                if let Some(a) = &r.agent {
-                    println!("  Tricks-Agent: {a}");
-                }
-            });
-        }
-        RepoCmd::Use { spec, local, reset } => {
+        Cmd::Use { spec, local, reset } => {
             let r = source_repo::use_variant(ctx, &spec, local, reset)?;
             emit(json, &r, |r| {
                 println!(
@@ -230,7 +112,13 @@ pub fn run(ctx: &Ctx, c: RepoCmd) -> Result<()> {
                 }
             });
         }
-        RepoCmd::Diff { skill, from, to } => {
+        Cmd::Merge { skill, dry_run, cont, abort } => {
+            let ws = source_repo::require(ctx)?;
+            let o = source_repo::MergeOptions { only: skill.as_deref(), dry_run, cont, abort };
+            let r = source_repo::merge(ctx, &ws, &o)?;
+            emit(json, &r, |r| if dry_run { print_merge_check(r) } else { print_merge(r) });
+        }
+        Cmd::Diff { skill, from, to } => {
             let ws = source_repo::require(ctx)?;
             let files = source_repo::changed_files(ctx, &ws, &skill, &from, &to)?;
             let mut out = Vec::new();
@@ -250,8 +138,8 @@ pub fn run(ctx: &Ctx, c: RepoCmd) -> Result<()> {
                 }
             });
         }
-        RepoCmd::Pr { skill, title, body, dry_run } => {
-            let r = crate::pr::pr(ctx, &skill, title.as_deref(), body.as_deref(), dry_run)?;
+        Cmd::Contribute { skill, title, body, dry_run } => {
+            let r = crate::contribute::contribute(ctx, &skill, title.as_deref(), body.as_deref(), dry_run)?;
             emit(json, &r, |r| {
                 println!("{} → {} (branch {})", r.skill, r.upstream, r.branch);
                 println!("{}", r.diffstat);
@@ -261,7 +149,7 @@ pub fn run(ctx: &Ctx, c: RepoCmd) -> Result<()> {
                 }
             });
         }
-        RepoCmd::Publish { target, bump, dry_run, push, pr, accept_copyleft } => {
+        Cmd::Publish { target, bump, dry_run, push, pr, accept_copyleft } => {
             let r = crate::publish::publish(ctx, &crate::publish::PublishOptions { target, bump, dry_run, push, pr, accept_copyleft })?;
             let blocked = r.blocked;
             emit(json, &r, print_publish);
@@ -269,31 +157,70 @@ pub fn run(ctx: &Ctx, c: RepoCmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        RepoCmd::AllowLicense { skill, justification } => {
-            let ws = source_repo::require(ctx)?;
-            if justification.trim().len() < 10 {
-                bail!("give a real justification (e.g. \"separate licence agreement with the vendor\")");
-            }
-            source_repo::set_license_override(&ws, &skill, &justification)?;
-            emit(json, &serde_json::json!({ "skill": skill, "justification": justification }), |_| {
-                println!("{skill}: licence override recorded (shown in every publish pre-flight)")
-            });
-        }
-        RepoCmd::SourceRepos => {
-            let all = source_repo::all_source_repos(ctx)?;
-            let rows: Vec<serde_json::Value> =
-                all.iter().map(|w| serde_json::json!({ "name": w.name, "root": w.root, "skills": w.manifest.skills.len() })).collect();
-            emit(json, &rows, |rows| {
-                if rows.is_empty() {
-                    println!("no source repos registered; run `tricks init` in a git repository");
-                }
-                for r in rows {
-                    println!("{:<20} {:>3} skills  {}", r["name"].as_str().unwrap(), r["skills"], r["root"].as_str().unwrap());
-                }
-            });
-        }
+        _ => unreachable!("handled in cli::run"),
     }
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct RepoSummary {
+    pub name: String,
+    pub root: String,
+    pub skills: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Status {
+    /// The source repo containing the current directory.
+    pub source_repo: Option<RepoStatus>,
+    pub links: Vec<crate::links::LinkInfo>,
+    /// Registered source repos (from the user config).
+    pub repos: Vec<RepoSummary>,
+    /// Skills still deployed by New Tricks 0.2 user-scope installs.
+    pub legacy: usize,
+    pub unfinished_operations: Vec<String>,
+}
+
+pub fn status(ctx: &Ctx) -> Result<Status> {
+    let source_repo = source_repo::current(ctx)?.map(|w| source_repo::status(ctx, &w)).transpose()?;
+    Ok(Status {
+        source_repo,
+        links: crate::links::list(ctx)?,
+        repos: source_repo::all_source_repos(ctx)?
+            .into_iter()
+            .map(|w| RepoSummary { name: w.name.clone(), root: w.root.to_string_lossy().to_string(), skills: w.manifest.skills.len() })
+            .collect(),
+        legacy: crate::links::legacy(ctx)?.len(),
+        unfinished_operations: ctx.state.unfinished_ops()?.into_iter().map(|(_, op, d)| format!("{op} {d}")).collect(),
+    })
+}
+
+pub fn print_status(s: &Status) {
+    match &s.source_repo {
+        Some(w) => print_repo_status(w),
+        None if s.repos.is_empty() => println!("no source repos yet; run `tricks init` in a git repository"),
+        None => {
+            println!("source repos:");
+            for r in &s.repos {
+                println!("  {:<20} {:>3} skill(s)  {}", r.name, r.skills, r.root);
+            }
+        }
+    }
+    if !s.links.is_empty() {
+        println!("links:");
+        for l in &s.links {
+            let h = if l.health == "ok" { String::new() } else { format!("  !! {}", l.health) };
+            let skill = l.skill.strip_prefix("github.com/").unwrap_or(&l.skill);
+            let skill = skill.rsplit_once("//").filter(|_| skill.starts_with("ws:")).map(|(_, n)| n).unwrap_or(skill);
+            println!("  {:<8} {} → {} ({}, {}){}", l.agent, l.path, skill, l.kind, l.mode, h);
+        }
+    }
+    if s.legacy > 0 {
+        println!("{} skill(s) installed at user scope by New Tricks 0.2 are no longer managed; see `tricks doctor`", s.legacy);
+    }
+    for u in &s.unfinished_operations {
+        println!("interrupted operation: {u} (re-run the command to recover)");
+    }
 }
 
 fn print_vendor(r: &source_repo::VendorReport) {
@@ -307,22 +234,12 @@ fn print_vendor(r: &source_repo::VendorReport) {
     if !r.risk.is_empty() {
         println!("  risk     {}", r.risk.join("; "));
     }
-    println!("  not committed yet: review and `git commit` when ready");
+    println!("  not committed yet: review and `git commit` when ready; `tricks link {}` to try it", r.name);
 }
 
-pub fn print_repo_install(r: &RepoInstallReport) {
-    println!("source repo {}: dev deployments", r.source_repo);
-    for (n, ps) in &r.skills {
-        println!("  {n}");
-        for p in ps {
-            println!("    → {p}");
-        }
-    }
-}
-
-pub fn print_repo_update(r: &RepoUpdateReport) {
+fn print_merge(r: &MergeReport) {
     if r.items.is_empty() {
-        println!("no vendored skills to update");
+        println!("no vendored skills to merge");
     }
     for i in &r.items {
         let to = i.to_ref.clone().or(i.to.as_deref().map(|c| short(c).to_string())).unwrap_or_default();
@@ -353,7 +270,7 @@ pub fn print_repo_update(r: &RepoUpdateReport) {
     }
 }
 
-pub fn print_repo_outdated(r: &RepoUpdateReport) {
+fn print_merge_check(r: &MergeReport) {
     let mut any = false;
     for i in &r.items {
         if i.state == "up-to-date" {
@@ -363,6 +280,9 @@ pub fn print_repo_outdated(r: &RepoUpdateReport) {
         println!("{:<24} {} → {}", i.name, i.from.as_deref().map(short).unwrap_or("?"), i.to_ref.clone().unwrap_or_default());
         for f in &i.incoming {
             println!("    {f}");
+        }
+        for r in &i.risk {
+            println!("    risk {r}");
         }
         if let Some(m) = &i.message {
             println!("    {m}");
@@ -385,7 +305,7 @@ pub fn print_repo_status(w: &RepoStatus) {
             notes.push("customized".into());
         }
         if let Some(u) = &s.update_available {
-            notes.push(format!("update ready: {u}"));
+            notes.push(format!("upstream has {u}"));
         }
         if s.merge_in_progress {
             notes.push("MERGE IN PROGRESS".into());

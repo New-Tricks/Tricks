@@ -44,8 +44,8 @@ export class DiscoverView implements vscode.WebviewViewProvider {
         case "preview":
           await vscode.commands.executeCommand("tricks.preview", m.id);
           break;
-        case "install":
-          await vscode.commands.executeCommand("tricks.install", m.id);
+        case "try":
+          await vscode.commands.executeCommand("tricks.try", m.id);
           break;
         case "vendor":
           await vscode.commands.executeCommand("tricks.vendor", m.id);

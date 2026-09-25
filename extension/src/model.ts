@@ -28,30 +28,23 @@ export interface RepoStatus {
   targets: string[];
 }
 
-export interface Placement {
+/** A link: a source repo skill (dev) or an upstream skill under trial. */
+export interface LinkInfo {
   skill: string;
-  origin: string;
   agent: string;
   scope: string;
   path: string;
   mode: string;
+  kind: "dev" | "trial";
   health: string;
 }
 
-export interface UserSkill {
-  id: string;
-  name: string;
-  ref_name: string;
-  commit: string;
-  policy: string;
-  ahead_of_lock: boolean;
-  pending: string | null;
-  placements: Placement[];
-}
-
 export interface Status {
-  user: { skills: UserSkill[]; links: Placement[]; updates_ready: number };
   source_repo: RepoStatus | null;
+  links: LinkInfo[];
+  repos: { name: string; root: string; skills: number }[];
+  legacy: number;
+  unfinished_operations: string[];
 }
 
 /** Shared status model; trees and the status bar render from it. */

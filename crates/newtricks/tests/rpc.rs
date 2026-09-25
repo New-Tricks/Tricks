@@ -34,11 +34,24 @@ fn recv(r: &mut impl BufRead) -> Value {
 #[test]
 fn serve_stdio_roundtrip() {
     let s = Sandbox::new();
-    let up = s.upstream("acme", "skills", &[("skills/hello/SKILL.md", &skill_md("hello", "Say hello. Use when greeting.", "v1\n"))]);
+    let up = s.upstream(
+        "acme",
+        "skills",
+        &[
+            ("skills/hello/SKILL.md", &skill_md("hello", "Say hello. Use when greeting.", "v1\n")),
+            (
+                "skills/secret/SKILL.md",
+                "---\nname: secret\ndescription: Secret recipe. Use when cooking.\nlicense: Proprietary\n---\nbody\n",
+            ),
+        ],
+    );
     git(&up, &["tag", "v1.0.0"]);
+    let ws = s.project("my-skills");
+    s.ok_in(&ws, &["init"]);
+    let proj = s.project("app");
     let mut child = Command::new(env!("CARGO_BIN_EXE_tricks"))
         .args(["serve", "--stdio"])
-        .current_dir(s.root())
+        .current_dir(&ws)
         .env("TRICKS_HOME", &s.home)
         .env("TRICKS_CONFIG_DIR", &s.config)
         .env("TRICKS_DATA_DIR", &s.data)
@@ -51,31 +64,31 @@ fn serve_stdio_roundtrip() {
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let mut out = BufReader::new(child.stdout.take().unwrap());
-    send(&mut stdin, &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"cwd": s.root()}}));
-    let r = recv(&mut out);
-    assert_eq!(r["id"], 1);
+    let mut call = |id: i64, method: &str, params: Value| {
+        send(&mut stdin, &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
+        recv(&mut out)
+    };
+    let r = call(1, "initialize", json!({}));
     assert!(r["result"]["version"].is_string());
-    send(&mut stdin, &json!({"jsonrpc":"2.0","id":2,"method":"show","params":{"skill":"acme/skills//hello"}}));
-    let r = recv(&mut out);
+    assert!(r["result"]["source_repo"]["root"].is_string(), "{r}");
+    let r = call(2, "show", json!({"skill":"acme/skills//hello"}));
     assert_eq!(r["result"]["canonical"], "github.com/acme/skills//skills/hello@v1.0.0", "{r}");
-    send(&mut stdin, &json!({"jsonrpc":"2.0","id":3,"method":"user/add","params":{"skill":"acme/skills//hello","agents":["claude"]}}));
-    let r = recv(&mut out);
-    assert!(r["result"]["placements"].as_array().unwrap().len() == 1, "{r}");
-    // Update with a pending change and no `yes` → confirmation_required error.
-    std::fs::write(up.join("skills/hello/SKILL.md"), skill_md("hello", "Say hello. Use when greeting.", "v2\n")).unwrap();
-    commit_all(&up, "v2");
-    git(&up, &["tag", "v1.1.0"]);
-    let cfg = s.config.join("tricks.toml");
-    std::fs::write(&cfg, std::fs::read_to_string(&cfg).unwrap().replace("[settings]", "[settings]\nfetch_interval = \"0s\"")).unwrap();
-    send(&mut stdin, &json!({"jsonrpc":"2.0","id":4,"method":"user/update","params":{}}));
-    let r = recv(&mut out);
+    // Try an upstream skill in a project.
+    let r = call(3, "link", json!({"skill":"acme/skills//hello","to": proj,"agents":["claude"]}));
+    assert_eq!(r["result"]["links"][0]["placements"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["result"]["links"][0]["trial"], true);
+    // Vendoring a proprietary skill needs confirmation: the error carries the details.
+    let r = call(4, "sourceRepo/vendor", json!({"skill":"acme/skills//secret"}));
     assert_eq!(r["error"]["code"], -32001, "{r}");
-    assert!(r["error"]["data"]["details"].to_string().contains("v1.1.0"));
-    send(&mut stdin, &json!({"jsonrpc":"2.0","id":5,"method":"user/update","params":{"yes": true}}));
-    let r = recv(&mut out);
-    assert_eq!(r["result"]["updates"][0]["applied"], true, "{r}");
-    send(&mut stdin, &json!({"jsonrpc":"2.0","id":6,"method":"nope"}));
-    let r = recv(&mut out);
+    assert!(r["error"]["data"]["details"].to_string().contains("Proprietary"), "{r}");
+    let r = call(5, "sourceRepo/vendor", json!({"skill":"acme/skills//secret","yes": true}));
+    assert_eq!(r["result"]["name"], "secret", "{r}");
+    let r = call(6, "sourceRepo/merge", json!({"dryRun": true}));
+    assert_eq!(r["result"]["items"][0]["state"], "up-to-date", "{r}");
+    let r = call(7, "status", json!({}));
+    assert_eq!(r["result"]["source_repo"]["skills"][0]["name"], "secret", "{r}");
+    assert_eq!(r["result"]["links"].as_array().unwrap().len(), 1, "{r}");
+    let r = call(8, "nope", json!({}));
     assert_eq!(r["error"]["code"], -32000);
     send(&mut stdin, &json!({"jsonrpc":"2.0","method":"exit"}));
     assert!(child.wait().unwrap().success());

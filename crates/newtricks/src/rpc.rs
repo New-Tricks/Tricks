@@ -144,7 +144,6 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
                 source: s(p, "catalog").map(String::from),
                 owner: s(p, "owner").map(String::from),
                 category: s(p, "category").map(String::from),
-                installed: b(p, "installed"),
                 no_scripts: b(p, "noScripts"),
                 limit: p.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize,
                 refresh: b(p, "refresh"),
@@ -167,42 +166,28 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
         }
         "catalog/remove" => to(json!({ "removed": crate::catalogs::remove(ctx, req(p, "input")?)? })),
         "catalog/refresh" => to(crate::catalogs::refresh(ctx, true, s(p, "catalog"))?),
-        "user/add" => {
-            let policy = s(p, "update").map(crate::config::Policy::parse).transpose()?;
-            to(crate::user::add(ctx, req(p, "skill")?, &strs(p, "agents"), policy, b(p, "copy"), b(p, "shadow"))?)
-        }
-        "user/remove" => to(json!({ "removed": crate::user::remove(ctx, req(p, "skill")?)? })),
-        "user/install" => to(crate::user::install(ctx, b(p, "frozen"))?),
-        "user/update" => to(json!({ "updates": crate::user::update(ctx, s(p, "skill"))? })),
-        "user/outdated" => to(json!({ "pending": crate::user::outdated(ctx)? })),
-        "user/rollback" => to(crate::user::rollback(ctx, req(p, "skill")?)?),
-        "user/policy" => {
-            let pol = crate::config::Policy::parse(req(p, "policy")?)?;
-            to(json!({ "id": crate::user::set_policy(ctx, req(p, "skill")?, pol)? }))
-        }
         "status" => {
-            let wb = crate::user::status(ctx)?;
-            let w = match ws::current(ctx)? {
-                Some(w) => Some(ws::status(ctx, &w)?),
-                None => None,
-            };
-            to(json!({ "user": wb, "source_repo": w }))
+            ws::reconcile(ctx)?;
+            to(crate::cli_repo::status(ctx)?)
         }
-        "link" => to(crate::links::link(ctx, req(p, "skill")?, s(p, "to"), b(p, "global"), &strs(p, "agents"), b(p, "copy"), b(p, "shadow"))?),
-        "unlink" => to(crate::links::unlink(ctx, s(p, "skill"), s(p, "to"), b(p, "global"), b(p, "all"))?),
+        "link" => to(crate::links::link(
+            ctx,
+            s(p, "skill"),
+            &crate::links::LinkOptions { to: s(p, "to"), global: b(p, "global"), agents: &strs(p, "agents"), copy: b(p, "copy"), shadow: b(p, "shadow") },
+        )?),
+        "unlink" => to(crate::links::unlink(
+            ctx,
+            s(p, "skill"),
+            &crate::links::UnlinkOptions { to: s(p, "to"), global: b(p, "global"), all: b(p, "all"), legacy: b(p, "legacy") },
+        )?),
         "agents" => to(crate::agents::AGENTS.iter().map(|a| json!({ "id": a.id, "name": a.display, "userDir": ctx.paths.contract(&a.user_path(&ctx.paths.home)), "projectDir": a.project_dir, "mode": if a.follows_links(&ctx.paths.store()) { "link" } else { "copy" } })).collect::<Vec<_>>()),
         "doctor" => to(crate::doctor::run(ctx)?),
-        "agentSkill/status" => to(json!({ "status": crate::agentskill::status(ctx)?, "offer": crate::agentskill::should_offer(ctx)? })),
-        "agentSkill/install" => to(json!({ "paths": crate::agentskill::install(ctx, &strs(p, "agents"))? })),
-        "agentSkill/remove" => to(json!({ "paths": crate::agentskill::remove(ctx)? })),
-        "agentSkill/dismiss" => {
-            crate::agentskill::mark_offered(ctx)?;
-            Ok(json!({ "ok": true }))
-        }
         "sourceRepo/init" => to(ws::init(ctx, s(p, "name"), b(p, "agentSkill"))?),
         "sourceRepo/status" => to(ws::status(ctx, &ws::require(ctx)?)?),
-        "sourceRepo/vendor" => to(ws::vendor(ctx, &ws::require(ctx)?, req(p, "skill")?, s(p, "name"), s(p, "path"))?),
-        "sourceRepo/import" => to(ws::import(ctx, &ws::require(ctx)?, req(p, "folder")?, s(p, "name"), s(p, "upstream"), s(p, "base"))?),
+        "sourceRepo/vendor" => {
+            let o = ws::VendorOptions { name: s(p, "name"), path: s(p, "path"), upstream: s(p, "upstream"), base: s(p, "base") };
+            to(ws::vendor(ctx, &ws::require(ctx)?, req(p, "skill")?, &o)?)
+        }
         "sourceRepo/new" => to(ws::new_skill(&ws::require(ctx)?, req(p, "name")?, s(p, "description"))?),
         "sourceRepo/lint" => {
             let w = ws::require(ctx)?;
@@ -220,11 +205,17 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
             let paths: std::collections::BTreeMap<String, String> = w.manifest.skills.iter().map(|(n, sk)| (n.clone(), w.root.join(&sk.path).to_string_lossy().to_string())).collect();
             to(json!({ "report": r, "skillPaths": paths }))
         }
-        "sourceRepo/update" => to(ws::update(ctx, &ws::require(ctx)?, s(p, "skill"), b(p, "continue"), b(p, "abort"))?),
-        "sourceRepo/outdated" => to(ws::outdated(ctx, &ws::require(ctx)?)?),
-        "sourceRepo/install" => to(ws::install_dev(ctx, &ws::require(ctx)?, &strs(p, "agents"))?),
-        "sourceRepo/edit" => to(ws::edit(ctx, req(p, "skill")?, s(p, "branch"))?),
-        "sourceRepo/commit" => to(ws::commit(ctx, req(p, "skill")?, req(p, "message")?)?),
+        "sourceRepo/merge" => {
+            let o = ws::MergeOptions { only: s(p, "skill"), dry_run: b(p, "dryRun"), cont: b(p, "continue"), abort: b(p, "abort") };
+            to(ws::merge(ctx, &ws::require(ctx)?, &o)?)
+        }
+        "sourceRepo/edit" => {
+            if b(p, "done") {
+                to(ws::edit_done(ctx, req(p, "skill")?)?)
+            } else {
+                to(ws::edit(ctx, req(p, "skill")?, s(p, "branch"))?)
+            }
+        }
         "sourceRepo/use" => to(ws::use_variant(ctx, req(p, "spec")?, b(p, "local"), b(p, "reset"))?),
         "sourceRepo/changedFiles" => {
             let w = ws::require(ctx)?;
@@ -241,11 +232,6 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
             let w = ws::require(ctx)?;
             to(json!({ "state": ws::merge_state(ctx, &w, req(p, "skill")?)?, "skillDir": w.skill_dir(req(p, "skill")?)? }))
         }
-        "sourceRepo/allowLicense" => {
-            let w = ws::require(ctx)?;
-            ws::set_license_override(&w, req(p, "skill")?, req(p, "justification")?)?;
-            Ok(json!({ "ok": true }))
-        }
         "publish" => to(crate::publish::publish(
             ctx,
             &crate::publish::PublishOptions {
@@ -257,7 +243,7 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
                 accept_copyleft: b(p, "acceptCopyleft"),
             },
         )?),
-        "pr" => to(crate::pr::pr(ctx, req(p, "skill")?, s(p, "title"), s(p, "body"), b(p, "dryRun"))?),
+        "contribute" => to(crate::contribute::contribute(ctx, req(p, "skill")?, s(p, "title"), s(p, "body"), b(p, "dryRun"))?),
         other => bail!("unknown method `{other}`"),
     }
 }

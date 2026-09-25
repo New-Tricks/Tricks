@@ -259,7 +259,6 @@ pub struct Filters {
     pub license: Option<String>,
     pub source: Option<String>,
     pub owner: Option<String>,
-    pub installed: bool,
     pub no_scripts: bool,
     pub category: Option<String>,
 }
@@ -286,7 +285,8 @@ pub struct SearchResult {
     pub updated_at: Option<i64>,
     pub risk: Vec<String>,
     pub agents: Vec<String>,
-    pub installed: bool,
+    /// Currently linked for a trial (`tricks link <upstream>`).
+    pub linked: bool,
     pub vendored: bool,
     /// Other ids with identical content (same tree hash).
     pub duplicates: Vec<String>,
@@ -338,10 +338,15 @@ pub fn fts_query(q: &str) -> Option<String> {
     )
 }
 
+/// Upstream skills with an active trial link.
+pub fn linked_ids(ctx: &Ctx) -> BTreeSet<String> {
+    ctx.state.placements("WHERE origin='link'", &[]).map(|v| v.into_iter().map(|p| p.skill).collect()).unwrap_or_default()
+}
+
 pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<SearchResult>> {
     let identity = crate::catalogs::cached_identity(ctx, "github.com");
     let starred = crate::catalogs::cached_starred(ctx, "github.com");
-    let installed: BTreeSet<String> = crate::user::installed_ids(ctx).unwrap_or_default();
+    let linked: BTreeSet<String> = linked_ids(ctx);
     let vendored: BTreeSet<String> = crate::source_repo::vendored_upstreams(ctx).unwrap_or_default();
     let c = &ctx.state.conn;
 
@@ -508,10 +513,6 @@ pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<S
         if f.no_scripts && has_scripts {
             continue;
         }
-        let is_installed = installed.contains(&id);
-        if f.installed && !is_installed {
-            continue;
-        }
 
         let mut risk = Vec::new();
         if has_scripts {
@@ -543,6 +544,7 @@ pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<S
         let variants = names.get(&name).map(|t| t.len().saturating_sub(1)).unwrap_or(0);
         results.push(SearchResult {
             vendored: vendored.contains(&id),
+            linked: linked.contains(&id),
             signals: sigs,
             id,
             name,
@@ -562,7 +564,6 @@ pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<S
             updated_at,
             risk,
             agents,
-            installed: is_installed,
             duplicates: vec![],
             variants,
             kind,

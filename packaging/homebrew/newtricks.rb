@@ -25,6 +25,6 @@ class Newtricks < Formula
     ENV["TRICKS_HOME"] = testpath
     ENV["TRICKS_CONFIG_DIR"] = testpath/"config"
     ENV["TRICKS_DATA_DIR"] = testpath/"data"
-    assert_match "claude", shell_output("#{bin}/tricks --offline agents")
+    assert_match "no source repos yet", shell_output("#{bin}/tricks --offline status")
   end
 end

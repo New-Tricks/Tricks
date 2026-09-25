@@ -25,10 +25,11 @@ impl Paths {
         Ok(Paths { config_dir, data_dir, home })
     }
 
-    pub fn user_manifest(&self) -> PathBuf {
+    pub fn user_config(&self) -> PathBuf {
         self.config_dir.join("tricks.toml")
     }
-    pub fn user_lock(&self) -> PathBuf {
+    /// The user-scope lock written by New Tricks 0.2 and earlier (reported by `doctor`).
+    pub fn legacy_user_lock(&self) -> PathBuf {
         self.config_dir.join("tricks.lock")
     }
     pub fn store(&self) -> PathBuf {

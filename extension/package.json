@@ -1,8 +1,8 @@
 {
   "name": "new-tricks",
   "displayName": "New Tricks",
-  "description": "Teach your agents new tricks: federated skill search, preview, customize upstream skills, branch experiments, lint and publish.",
-  "version": "0.2.1",
+  "description": "Teach your agents new tricks: author, customize and test agent skills in a source repo — federated search, vendoring with upstream merges, branch experiments, links for testing, lint and publish.",
+  "version": "0.3.0",
   "publisher": "newtricks",
   "license": "Apache-2.0",
   "repository": {
@@ -55,15 +55,15 @@
           "when": "tricks.hasSourceRepo"
         },
         {
-          "id": "tricks.installed",
-          "name": "Installed & Links"
+          "id": "tricks.links",
+          "name": "Links"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "tricks.installed",
-        "contents": "No skills installed yet.\nSearch in Discover, then install a skill for your agents.\n[Initialize a source repo](command:tricks.initSourceRepo) to author and customize skills."
+        "view": "tricks.links",
+        "contents": "No links yet.\nLink your source repo's skills to test them with your agents, or try an upstream skill from Discover.\n[Link Source Repo Skills](command:tricks.linkAll)\n[Initialize a source repo](command:tricks.initSourceRepo) to author and customize skills."
       }
     ],
     "commands": [
@@ -91,32 +91,16 @@
         "category": "New Tricks"
       },
       {
-        "command": "tricks.install",
-        "title": "Install for Agents…",
+        "command": "tricks.try",
+        "title": "Try in a Project…",
         "category": "New Tricks",
-        "icon": "$(cloud-download)"
+        "icon": "$(beaker)"
       },
       {
         "command": "tricks.vendor",
         "title": "Vendor into Source Repo",
         "category": "New Tricks",
         "icon": "$(repo-forked)"
-      },
-      {
-        "command": "tricks.remove",
-        "title": "Remove from User Skills",
-        "category": "New Tricks",
-        "icon": "$(trash)"
-      },
-      {
-        "command": "tricks.userUpdate",
-        "title": "Review User Skill Updates",
-        "category": "New Tricks"
-      },
-      {
-        "command": "tricks.rollback",
-        "title": "Roll Back",
-        "category": "New Tricks"
       },
       {
         "command": "tricks.initSourceRepo",
@@ -152,18 +136,24 @@
         "icon": "$(diff)"
       },
       {
-        "command": "tricks.update",
+        "command": "tricks.checkUpstream",
+        "title": "Check Upstream Changes",
+        "category": "New Tricks",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "tricks.merge",
         "title": "Merge Upstream Changes",
         "category": "New Tricks",
         "icon": "$(git-merge)"
       },
       {
-        "command": "tricks.updateContinue",
+        "command": "tricks.mergeContinue",
         "title": "Continue Upstream Merge",
         "category": "New Tricks"
       },
       {
-        "command": "tricks.updateAbort",
+        "command": "tricks.mergeAbort",
         "title": "Abort Upstream Merge",
         "category": "New Tricks"
       },
@@ -174,8 +164,8 @@
         "icon": "$(git-branch)"
       },
       {
-        "command": "tricks.commit",
-        "title": "Commit Skill…",
+        "command": "tricks.editDone",
+        "title": "Finish Editing",
         "category": "New Tricks",
         "icon": "$(check)"
       },
@@ -185,15 +175,28 @@
         "category": "New Tricks"
       },
       {
-        "command": "tricks.linkToProject",
-        "title": "Link to Project…",
+        "command": "tricks.linkAll",
+        "title": "Link Source Repo Skills",
         "category": "New Tricks",
         "icon": "$(link)"
       },
       {
+        "command": "tricks.linkToProject",
+        "title": "Link to Project…",
+        "category": "New Tricks",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "tricks.unlink",
+        "title": "Unlink",
+        "category": "New Tricks",
+        "icon": "$(debug-disconnect)"
+      },
+      {
         "command": "tricks.unlinkAll",
-        "title": "Remove All Test Links",
-        "category": "New Tricks"
+        "title": "Remove All Links",
+        "category": "New Tricks",
+        "icon": "$(clear-all)"
       },
       {
         "command": "tricks.publish",
@@ -202,8 +205,8 @@
         "icon": "$(rocket)"
       },
       {
-        "command": "tricks.pr",
-        "title": "Open Pull Request Upstream…",
+        "command": "tricks.contribute",
+        "title": "Contribute Upstream…",
         "category": "New Tricks"
       },
       {
@@ -215,22 +218,22 @@
         "command": "tricks.statusActions",
         "title": "Status Actions",
         "category": "New Tricks"
-      },
-      {
-        "command": "tricks.agentSkill",
-        "title": "Install Agent Skill…",
-        "category": "New Tricks"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "tricks.refresh",
-          "when": "view == tricks.sourceRepo || view == tricks.installed",
+          "when": "view == tricks.sourceRepo || view == tricks.links",
           "group": "navigation"
         },
         {
           "command": "tricks.newSkill",
+          "when": "view == tricks.sourceRepo",
+          "group": "navigation"
+        },
+        {
+          "command": "tricks.linkAll",
           "when": "view == tricks.sourceRepo",
           "group": "navigation"
         },
@@ -242,6 +245,16 @@
         {
           "command": "tricks.publish",
           "when": "view == tricks.sourceRepo",
+          "group": "navigation"
+        },
+        {
+          "command": "tricks.checkUpstream",
+          "when": "view == tricks.sourceRepo",
+          "group": "1_upstream@1"
+        },
+        {
+          "command": "tricks.unlinkAll",
+          "when": "view == tricks.links",
           "group": "navigation"
         }
       ],
@@ -257,7 +270,7 @@
           "group": "inline"
         },
         {
-          "command": "tricks.update",
+          "command": "tricks.merge",
           "when": "view == tricks.sourceRepo && viewItem =~ /updateReady/",
           "group": "inline"
         },
@@ -267,8 +280,8 @@
           "group": "2_edit@1"
         },
         {
-          "command": "tricks.commit",
-          "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
+          "command": "tricks.editDone",
+          "when": "view == tricks.sourceRepo && viewItem =~ /editing/",
           "group": "2_edit@2"
         },
         {
@@ -279,7 +292,7 @@
         {
           "command": "tricks.linkToProject",
           "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
-          "group": "3_deploy@1"
+          "group": "3_link@1"
         },
         {
           "command": "tricks.changes",
@@ -287,39 +300,29 @@
           "group": "4_upstream@1"
         },
         {
-          "command": "tricks.update",
+          "command": "tricks.merge",
           "when": "view == tricks.sourceRepo && viewItem =~ /vendored/",
           "group": "4_upstream@2"
         },
         {
-          "command": "tricks.updateContinue",
+          "command": "tricks.mergeContinue",
           "when": "view == tricks.sourceRepo && viewItem =~ /merging/",
           "group": "4_upstream@3"
         },
         {
-          "command": "tricks.updateAbort",
+          "command": "tricks.mergeAbort",
           "when": "view == tricks.sourceRepo && viewItem =~ /merging/",
           "group": "4_upstream@4"
         },
         {
-          "command": "tricks.pr",
+          "command": "tricks.contribute",
           "when": "view == tricks.sourceRepo && viewItem =~ /vendored/",
           "group": "4_upstream@5"
         },
         {
-          "command": "tricks.preview",
-          "when": "view == tricks.installed && viewItem == userSkill",
+          "command": "tricks.unlink",
+          "when": "view == tricks.links && viewItem == link",
           "group": "inline"
-        },
-        {
-          "command": "tricks.remove",
-          "when": "view == tricks.installed && viewItem == userSkill",
-          "group": "inline"
-        },
-        {
-          "command": "tricks.rollback",
-          "when": "view == tricks.installed && viewItem == userSkill",
-          "group": "1@1"
         }
       ],
       "commandPalette": [
@@ -329,6 +332,10 @@
         },
         {
           "command": "tricks.statusActions",
+          "when": "false"
+        },
+        {
+          "command": "tricks.unlink",
           "when": "false"
         }
       ]
@@ -350,7 +357,7 @@
           "type": "number",
           "default": 60,
           "minimum": 5,
-          "description": "How often to check for skill updates while VS Code is open. Fetches are throttled by the fetch_interval in your user config."
+          "description": "How often to check vendored skills for upstream changes while VS Code is open. Fetches are throttled by the fetch_interval in your user config."
         },
         "tricks.useGitHubSession": {
           "type": "boolean",

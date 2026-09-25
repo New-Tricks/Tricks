@@ -1,5 +1,5 @@
-//! `tricks pr <skill>` (spec §11): contribute a customization back upstream. Only
-//! the B → C change of that one skill leaves the source repo.
+//! `tricks contribute <skill>` (spec §11): offer a customization back upstream as a pull
+//! request. Only the B → C change of that one skill leaves the source repo.
 
 use crate::ctx::Ctx;
 use crate::git::{self, git};
@@ -14,7 +14,7 @@ use serde::Serialize;
 use std::process::Command;
 
 #[derive(Debug, Serialize)]
-pub struct PrReport {
+pub struct ContributeReport {
     pub skill: String,
     pub upstream: String,
     pub branch: String,
@@ -26,7 +26,7 @@ pub struct PrReport {
     pub dry_run: bool,
 }
 
-pub fn pr(ctx: &Ctx, name: &str, title: Option<&str>, body: Option<&str>, dry_run: bool) -> Result<PrReport> {
+pub fn contribute(ctx: &Ctx, name: &str, title: Option<&str>, body: Option<&str>, dry_run: bool) -> Result<ContributeReport> {
     let ws = source_repo::require(ctx)?;
     let s = ws.skill(name)?.clone();
     let upstream = s.upstream.clone().context("this skill has no upstream (local original); nothing to contribute back")?;
@@ -73,7 +73,7 @@ pub fn pr(ctx: &Ctx, name: &str, title: Option<&str>, body: Option<&str>, dry_ru
     if !outcome.is_clean() {
         let _ = git(&mirror.dir, &["worktree", "remove", "--force", &wt_root.to_string_lossy()]);
         bail!(
-            "your change conflicts with the current upstream ({}); run `tricks update {name}` first",
+            "your change conflicts with the current upstream ({}); run `tricks merge {name}` first",
             outcome.conflicts.iter().map(|c| c.path.clone()).collect::<Vec<_>>().join(", ")
         );
     }
@@ -83,7 +83,7 @@ pub fn pr(ctx: &Ctx, name: &str, title: Option<&str>, body: Option<&str>, dry_ru
     let msg = title.map(String::from).unwrap_or_else(|| format!("Improve {name} skill"));
     git(&wt_root, &["-c", "commit.gpgsign=false", "commit", "-q", "-m", &msg])?;
 
-    let mut rep = PrReport {
+    let mut rep = ContributeReport {
         skill: name.into(),
         upstream: base_id.source.to_string(),
         branch: branch.clone(),

@@ -62,7 +62,7 @@ pub fn run(ctx: &Ctx) -> Result<DoctorReport> {
             checks.push(check("API rate limit", r.rate.remaining > 50, format!("{}/{} remaining", r.rate.remaining, r.rate.limit)));
         }
     }
-    let m = crate::user::load_manifest(ctx)?;
+    let m = crate::user::config(ctx)?;
     for (name, path) in &m.source_repos {
         let p = ctx.paths.expand(path);
         let ok = p.join(crate::config::REPO_MANIFEST).is_file();
@@ -83,7 +83,27 @@ pub fn run(ctx: &Ctx) -> Result<DoctorReport> {
         checks.push(check(
             &format!("agent {}", a.id),
             true,
-            format!("{} ({}; mode {mode})", ctx.paths.contract(&d), if d.exists() { "exists" } else { "not created yet" }),
+            format!(
+                "user {} ({}), project {}; {mode} mode; tested {}",
+                ctx.paths.contract(&d),
+                if d.exists() { "exists" } else { "not created yet" },
+                a.project_dir,
+                a.tested
+            ),
+        ));
+    }
+    // User-scope installs from New Tricks 0.2 and earlier keep working but are no
+    // longer managed: install them with APM, `npx skills` or a plugin marketplace.
+    let legacy = crate::links::legacy(ctx)?;
+    if !legacy.is_empty() || !m.skills.is_empty() || ctx.paths.legacy_user_lock().exists() {
+        checks.push(check(
+            "user-scope installs",
+            false,
+            format!(
+                "{} skill(s) installed by New Tricks 0.2 are still deployed but no longer managed; reinstall them with APM or                  `npx skills add`, then remove the old copies with `tricks unlink --legacy` (and the [skills] table / tricks.lock in {})",
+                legacy.len().max(m.skills.len()),
+                ctx.paths.contract(&ctx.paths.config_dir)
+            ),
         ));
     }
     let unfinished = ctx.state.unfinished_ops()?;

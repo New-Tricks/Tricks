@@ -1,14 +1,14 @@
 import * as path from "path";
 import * as vscode from "vscode";
-import { Model, Placement, UserSkill, RepoSkill } from "./model";
+import { LinkInfo, Model, RepoSkill } from "./model";
 
 export class SkillItem extends vscode.TreeItem {
   constructor(
     public readonly skillName: string,
     label: string,
     collapsible: vscode.TreeItemCollapsibleState,
-    public readonly kind: "repoSkill" | "userSkill" | "detail" | "link",
-    public readonly data?: RepoSkill | UserSkill | Placement,
+    public readonly kind: "repoSkill" | "detail" | "link",
+    public readonly data?: RepoSkill | LinkInfo,
   ) {
     super(label, collapsible);
   }
@@ -47,6 +47,7 @@ export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
         if (s.upstream) ctx.push("vendored");
         if (s.update_available) ctx.push("updateReady");
         if (s.merge_in_progress) ctx.push("merging");
+        if (s.editing) ctx.push("editing");
         it.contextValue = ctx.join(" ");
         it.iconPath = new vscode.ThemeIcon(
           s.merge_in_progress ? "git-merge" : s.lint_errors ? "error" : s.update_available ? "cloud-download" : s.upstream ? "repo-forked" : "file-code",
@@ -74,14 +75,14 @@ export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
     };
     const out: SkillItem[] = [];
     out.push(d(s.upstream ? `from ${s.upstream.replace(/^github\.com\//, "")}` : "local original", s.upstream ? "repo" : "home"));
-    if (s.update_available) out.push(d(`upstream update ${s.update_available} — merge`, "git-merge", { command: "tricks.update", title: "Merge", arguments: [e] }));
+    if (s.update_available) out.push(d(`upstream has ${s.update_available} — merge`, "git-merge", { command: "tricks.merge", title: "Merge", arguments: [e] }));
     if (s.merge_in_progress) {
-      out.push(d("merge in progress — continue", "check", { command: "tricks.updateContinue", title: "Continue", arguments: [e] }));
-      out.push(d("abort merge", "discard", { command: "tricks.updateAbort", title: "Abort", arguments: [e] }));
+      out.push(d("merge in progress — continue", "check", { command: "tricks.mergeContinue", title: "Continue", arguments: [e] }));
+      out.push(d("abort merge", "discard", { command: "tricks.mergeAbort", title: "Abort", arguments: [e] }));
     }
     if (s.upstream) out.push(d("show changes…", "diff", { command: "tricks.changes", title: "Changes", arguments: [e] }));
     for (const b of s.branches) out.push(d(`branch ${b}${s.variant === b ? " (in use)" : ""}`, "git-branch", { command: "tricks.useVariant", title: "Use", arguments: [e, b] }));
-    if (s.dev_links) out.push(d(`${s.dev_links} deployment(s)`, "link"));
+    if (s.dev_links) out.push(d(`${s.dev_links} link(s)`, "link"));
     return out;
   }
 
@@ -90,8 +91,8 @@ export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
   }
 }
 
-/** Installed & Links view: user skills and test deployments. */
-export class InstalledTree implements vscode.TreeDataProvider<SkillItem> {
+/** Links view: source repo skills (dev) and upstream skills under trial, deployed for testing. */
+export class LinksTree implements vscode.TreeDataProvider<SkillItem> {
   private readonly emitter = new vscode.EventEmitter<SkillItem | undefined>();
   readonly onDidChangeTreeData = this.emitter.event;
 
@@ -104,46 +105,39 @@ export class InstalledTree implements vscode.TreeDataProvider<SkillItem> {
   }
 
   getChildren(e?: SkillItem): SkillItem[] {
-    const st = this.model.status?.user;
-    if (!st) return [];
+    const links = this.model.status?.links ?? [];
     if (!e) {
-      const items: SkillItem[] = st.skills.map((s) => {
-        const it = new SkillItem(s.id, s.name || s.id, vscode.TreeItemCollapsibleState.Collapsed, "userSkill", s);
-        const bits = [s.ref_name, s.policy];
-        if (s.pending) bits.push(`update ${s.pending}`);
-        if (s.ahead_of_lock) bits.push("ahead of lock");
-        if (s.placements.some((p) => p.health !== "ok")) bits.push("needs attention");
-        it.description = bits.join(" · ");
-        it.contextValue = "userSkill";
-        it.iconPath = new vscode.ThemeIcon(s.pending ? "cloud-download" : "extensions");
-        it.tooltip = s.id;
-        return it;
-      });
-      if (st.links.length) {
-        const links = new SkillItem("", `Test deployments (${st.links.length})`, vscode.TreeItemCollapsibleState.Expanded, "detail");
-        links.iconPath = new vscode.ThemeIcon("link");
-        links.contextValue = "linksGroup";
-        items.push(links);
+      const groups: SkillItem[] = [];
+      for (const [kind, label, icon] of [
+        ["dev", "Source repo skills", "file-code"],
+        ["trial", "Trying", "beaker"],
+      ] as const) {
+        const n = links.filter((l) => l.kind === kind).length;
+        if (!n) continue;
+        const g = new SkillItem(kind, `${label} (${n})`, vscode.TreeItemCollapsibleState.Expanded, "detail");
+        g.iconPath = new vscode.ThemeIcon(icon);
+        g.contextValue = "linkGroup";
+        groups.push(g);
       }
-      return items;
+      return groups;
     }
-    if (e.kind === "userSkill") {
-      return (e.data as UserSkill).placements.map((p) => placementItem(e.skillName, p));
-    }
-    if (e.contextValue === "linksGroup") {
-      return st.links.map((p) => placementItem(p.skill, p));
-    }
-    return [];
+    return links.filter((l) => l.kind === e.skillName).map(linkItem);
   }
 }
 
-function placementItem(skill: string, p: Placement): SkillItem {
-  const scope = p.scope === "global" ? "global" : path.basename(p.scope);
-  const label = `${p.agent} · ${scope}`;
-  const it = new SkillItem(skill, label, vscode.TreeItemCollapsibleState.None, "link", p);
-  it.description = `${p.mode}${p.health !== "ok" ? ` · ${p.health}` : ""}${p.origin !== "user" ? ` · ${p.origin}` : ""}`;
-  it.tooltip = `${p.path}\n${skill}`;
-  it.iconPath = new vscode.ThemeIcon(p.health === "ok" ? "pass" : "warning");
-  it.resourceUri = vscode.Uri.file(p.path);
+/** Display name of a link's skill: the source repo skill name or the upstream id. */
+export function linkSkillName(l: LinkInfo): string {
+  if (l.skill.startsWith("ws:")) return l.skill.slice(l.skill.lastIndexOf("//") + 2);
+  return l.skill.replace(/^github\.com\//, "");
+}
+
+function linkItem(l: LinkInfo): SkillItem {
+  const scope = l.scope === "global" ? "user-level" : path.basename(l.scope);
+  const it = new SkillItem(l.skill, `${linkSkillName(l)} · ${l.agent}`, vscode.TreeItemCollapsibleState.None, "link", l);
+  it.description = `${scope} · ${l.mode}${l.health !== "ok" ? ` · ${l.health}` : ""}`;
+  it.tooltip = `${l.path}\n${l.skill}`;
+  it.iconPath = new vscode.ThemeIcon(l.health === "ok" ? "pass" : "warning");
+  it.contextValue = "link";
+  it.resourceUri = vscode.Uri.file(l.path);
   return it;
 }

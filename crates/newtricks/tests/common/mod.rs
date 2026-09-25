@@ -168,6 +168,10 @@ impl Sandbox {
     }
 }
 
+pub fn read(p: &Path) -> String {
+    std::fs::read_to_string(p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()))
+}
+
 pub fn write(p: &Path, content: &str) {
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(p, content).unwrap();

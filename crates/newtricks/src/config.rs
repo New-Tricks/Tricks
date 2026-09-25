@@ -1,7 +1,7 @@
 //! Manifest and lock files (spec §6). Manifests hold intent and are edited with
 //! `toml_edit` to preserve user formatting; locks are generated.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,14 +13,16 @@ pub const REPO_LOCK: &str = "tricks.lock";
 pub const WORK_FILE: &str = "tricks.work.toml";
 pub const PUBLISHED_FILE: &str = ".tricks-published";
 
+/// How a vendored skill follows its upstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Policy {
+    /// Upstream changes are reported and merged on request (`tricks merge`).
     #[default]
     Review,
-    Auto,
-    UnsafeAuto,
+    /// Stay on the recorded base; `tricks merge` skips it unless named.
     Pinned,
+    /// Stop checking upstream.
     Paused,
 }
 
@@ -28,24 +30,9 @@ impl Policy {
     pub fn as_str(&self) -> &'static str {
         match self {
             Policy::Review => "review",
-            Policy::Auto => "auto",
-            Policy::UnsafeAuto => "unsafe-auto",
             Policy::Pinned => "pinned",
             Policy::Paused => "paused",
         }
-    }
-    pub fn parse(s: &str) -> Result<Policy> {
-        Ok(match s {
-            "review" => Policy::Review,
-            "auto" => Policy::Auto,
-            "unsafe-auto" => Policy::UnsafeAuto,
-            "pinned" => Policy::Pinned,
-            "paused" => Policy::Paused,
-            _ => bail!("unknown update policy `{s}` (review | auto | unsafe-auto | pinned | paused)"),
-        })
-    }
-    pub fn is_auto(&self) -> bool {
-        matches!(self, Policy::Auto | Policy::UnsafeAuto)
     }
 }
 
@@ -85,50 +72,19 @@ pub struct CatalogEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UserSkill {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rev: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agents: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub update: Option<Policy>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-}
-
-impl UserSkill {
-    /// The ref request in `@ref` form (`latest` when unspecified).
-    pub fn requested_ref(&self) -> String {
-        if let Some(b) = &self.branch {
-            return format!("refs/heads/{b}");
-        }
-        if let Some(r) = &self.rev {
-            return r.clone();
-        }
-        self.version.clone().unwrap_or_else(|| "latest".into())
-    }
-    pub fn policy(&self) -> Policy {
-        self.update.unwrap_or_default()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UserManifest {
+pub struct UserConfig {
     #[serde(default)]
     pub settings: Settings,
     #[serde(default, rename = "source-repos")]
     pub source_repos: BTreeMap<String, String>,
     #[serde(default)]
     pub catalogs: BTreeMap<String, CatalogEntry>,
-    #[serde(default)]
-    pub skills: BTreeMap<String, UserSkill>,
+    /// User-scope installs from New Tricks 0.2 and earlier (no longer managed; reported by `doctor`).
+    #[serde(default, skip_serializing)]
+    pub skills: BTreeMap<String, toml::Value>,
 }
 
-impl UserManifest {
+impl UserConfig {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
@@ -142,56 +98,8 @@ impl UserManifest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LockedSkill {
-    pub id: String,
-    pub name: String,
-    /// tag | branch | commit | default-branch
-    pub ref_kind: String,
-    pub ref_name: String,
-    pub commit: String,
-    pub tree: String,
-    /// Path of the skill at `commit` when it differs from the id's path (after an
-    /// upstream rename was followed but not yet updated).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UserLock {
-    #[serde(default = "one")]
-    pub version: u32,
-    #[serde(default, rename = "skill")]
-    pub skills: Vec<LockedSkill>,
-}
-
 fn one() -> u32 {
     1
-}
-
-impl UserLock {
-    pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(UserLock { version: 1, skills: vec![] });
-        }
-        let s = std::fs::read_to_string(path)?;
-        toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))
-    }
-    pub fn save(&mut self, path: &Path) -> Result<()> {
-        self.skills.sort_by(|a, b| a.id.cmp(&b.id));
-        let body = toml::to_string_pretty(self)?;
-        write_atomic(path, format!("# Generated by New Tricks. Do not edit.\n{body}").as_bytes())
-    }
-    pub fn get(&self, id: &str) -> Option<&LockedSkill> {
-        self.skills.iter().find(|s| s.id == id)
-    }
-    pub fn upsert(&mut self, s: LockedSkill) {
-        self.skills.retain(|x| x.id != s.id);
-        self.skills.push(s);
-    }
-    pub fn remove(&mut self, id: &str) {
-        self.skills.retain(|x| x.id != id);
-    }
 }
 
 // ---------------------------------------------------------------- source repo
@@ -480,11 +388,11 @@ documents = ["pdf"]
 
     #[test]
     fn inline_item() {
-        let s = UserSkill { version: Some("latest".into()), agents: Some(vec!["claude".into()]), ..Default::default() };
-        let item = to_inline(&s).unwrap();
+        let o = LicenseOverride { justification: "separate agreement".into() };
+        let item = to_inline(&o).unwrap();
         let mut doc = DocumentMut::new();
-        table_mut(&mut doc, &["skills"]).insert("github.com/a/b//c", item);
+        table_mut(&mut doc, &["skills", "pdf"]).insert("license-override", item);
         let out = doc.to_string();
-        assert!(out.contains(r#""github.com/a/b//c" = { version = "latest", agents = ["claude"] }"#), "{out}");
+        assert!(out.contains(r#"license-override = { justification = "separate agreement" }"#), "{out}");
     }
 }

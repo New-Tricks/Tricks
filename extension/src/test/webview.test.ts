@@ -57,7 +57,7 @@ const RESULTS = [
     variants: 3,
     signals: { tessl: { quality: 0.8625 } },
     risk: ["scripts", "Tessl security findings: HIGH"],
-    installed: true,
+    linked: true,
     vendored: false,
   },
   { id: "clawhub.ai/acme/skills//invoice", name: "<b>invoice</b>", description: "", trust: "unknown", license_class: "block", risk: [] },
@@ -67,7 +67,7 @@ async function discover(): Promise<void> {
   const p = discoverPage();
   // Loading the view runs an initial search with the default facets.
   assert.strictEqual(p.posted.length, 1);
-  assert.deepStrictEqual(p.posted[0], { type: "search", params: { query: "", agent: undefined, trust: undefined, license: undefined, noScripts: false, installed: false, limit: 40 } });
+  assert.deepStrictEqual(p.posted[0], { type: "search", params: { query: "", agent: undefined, trust: undefined, license: undefined, noScripts: false, limit: 40 } });
 
   // Results render as cards, as text only.
   p.send({ type: "results", results: RESULTS });
@@ -81,7 +81,7 @@ async function discover(): Promise<void> {
   assert.strictEqual(p.doc.querySelectorAll("img, b").length, 0, "skill text must never become markup");
   assert.strictEqual((p.doc.defaultView as any).pwned, undefined);
   const tags = [...cards[0].querySelectorAll(".tag")].map((t) => t.textContent);
-  for (const t of ["official", "open licence", "1.5k installs", "★ 2.0k", "in 2 catalog(s)", "1 identical copy", "3 variant(s)", "Tessl quality 86%", "scripts", "installed"]) {
+  for (const t of ["official", "open licence", "1.5k installs", "★ 2.0k", "in 2 catalog(s)", "1 identical copy", "3 variant(s)", "Tessl quality 86%", "scripts", "linked"]) {
     assert.ok(tags.includes(t), `missing tag "${t}" in ${JSON.stringify(tags)}`);
   }
   assert.ok(cards[0].querySelector(".tag.risk"), "risks are styled as risks");
@@ -93,9 +93,9 @@ async function discover(): Promise<void> {
   const buttons = [...cards[0].querySelectorAll("button")];
   assert.deepStrictEqual(
     buttons.map((b) => b.textContent),
-    ["Preview", "Install…", "Vendor", "Copy ID"],
+    ["Preview", "Try…", "Vendor", "Copy ID"],
   );
-  for (const [i, type] of ["preview", "install", "vendor", "copy"].entries()) {
+  for (const [i, type] of ["preview", "try", "vendor", "copy"].entries()) {
     (buttons[i] as any).click();
     assert.deepStrictEqual(p.last(), { type, id: RESULTS[0].id });
   }
@@ -133,11 +133,11 @@ async function discover(): Promise<void> {
   assert.strictEqual(p.doc.querySelectorAll(".card").length, 0);
 
   // Reopening the view restores the last query and facets.
-  const r = discoverPage({ params: { query: "docx", agent: "claude", trust: "official", license: "allow", noScripts: true, installed: true } });
+  const r = discoverPage({ params: { query: "docx", agent: "claude", trust: "official", license: "allow", noScripts: true } });
   assert.strictEqual((r.doc.getElementById("q") as any).value, "docx");
   assert.strictEqual((r.doc.getElementById("agent") as any).value, "claude");
-  assert.strictEqual((r.doc.getElementById("installed") as any).checked, true);
-  assert.deepStrictEqual(r.posted[0].params, { query: "docx", agent: "claude", trust: "official", license: "allow", noScripts: true, installed: true, limit: 40 });
+  assert.strictEqual((r.doc.getElementById("noScripts") as any).checked, true);
+  assert.deepStrictEqual(r.posted[0].params, { query: "docx", agent: "claude", trust: "official", license: "allow", noScripts: true, limit: 40 });
 }
 
 function publishPage(report: any) {
