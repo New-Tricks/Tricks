@@ -10,7 +10,7 @@ export async function run(): Promise<void> {
   const api: any = await ext!.activate();
   // Commands are registered.
   const cmds = await vscode.commands.getCommands(true);
-  for (const c of ["tricks.search", "tricks.update", "tricks.publish", "tricks.changes", "tricks.linkToProject"]) {
+  for (const c of ["tricks.search", "tricks.merge", "tricks.publish", "tricks.changes", "tricks.linkAll", "tricks.linkToProject", "tricks.try", "tricks.editDone"]) {
     assert.ok(cmds.includes(c), `missing command ${c}`);
   }
   // Status via the real binary over JSON-RPC.
@@ -35,6 +35,13 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand("markdown.showPreview", remoteUri("acme/skills//hello", "SKILL.md"));
   // Status bar reflects lint state.
   assert.ok(String(api.status.text).length > 0);
+
+  // Link the source repo's skills for the agents, then remove the links again.
+  await vscode.commands.executeCommand("tricks.linkAll");
+  const linked = api.model.status.links;
+  assert.ok(linked.length >= 2 && linked.every((l: any) => l.kind === "dev" && l.scope === "global"), JSON.stringify(linked));
+  await vscode.commands.executeCommand("tricks.unlinkAll");
+  assert.strictEqual(api.model.status.links.length, 0);
 
   // Discover: messages from the webview go through the real core.
   const posts: any[] = [];

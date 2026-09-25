@@ -12,7 +12,6 @@
       trust: $("trust").value || undefined,
       license: $("license").value || undefined,
       noScripts: $("noScripts").checked,
-      installed: $("installed").checked,
       limit: 40,
     };
   }
@@ -59,7 +58,7 @@
       const tq = r.signals && r.signals.tessl && r.signals.tessl.quality;
       if (typeof tq === "number") add("Tessl quality " + Math.round(tq * 100) + "%");
       for (const k of r.risk || []) add(k, "risk");
-      if (r.installed) add("installed", "state");
+      if (r.linked) add("linked", "state");
       if (r.vendored) add("vendored", "state");
       card.appendChild(tags);
       const actions = el("div", "actions");
@@ -69,7 +68,7 @@
         actions.appendChild(b);
       };
       btn("Preview", "preview");
-      btn("Install…", "install");
+      btn("Try…", "try");
       btn("Vendor", "vendor");
       btn("Copy ID", "copy");
       card.appendChild(actions);
@@ -85,7 +84,7 @@
     clearTimeout(timer);
     timer = setTimeout(run, 400);
   });
-  for (const id of ["agent", "trust", "license", "noScripts", "installed"]) $(id).addEventListener("change", run);
+  for (const id of ["agent", "trust", "license", "noScripts"]) $(id).addEventListener("change", run);
 
   window.addEventListener("message", (ev) => {
     const m = ev.data;
@@ -103,7 +102,6 @@
     $("trust").value = state.params.trust || "";
     $("license").value = state.params.license || "";
     $("noScripts").checked = !!state.params.noScripts;
-    $("installed").checked = !!state.params.installed;
   }
   run();
 })();

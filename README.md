@@ -1,11 +1,11 @@
 # New Tricks
 
-**Teach your agents new tricks.** New Tricks (`tricks`) is the design-time workbench for agent skills. Find skills across fragmented catalogs, try them against real agents, customize them while still receiving upstream improvements, author your own, and publish a repository that APM, `npx skills`, Claude plugin marketplaces, Copilot, Codex and Cursor can all install.
+**Teach your agents new tricks.** New Tricks (`tricks`) is the design-time workbench for agent skills. You work in a **source repo** — a git repository holding your own skills and customized copies of upstream skills — and New Tricks helps you find prior art across fragmented catalogs, keep vendored skills merging upstream improvements, try drafts and variants with real agents, lint them, and publish a repository that APM, `npx skills`, Claude plugin marketplaces, Copilot, Codex and Cursor can all install.
 
-Projects keep committing `apm.yml` and installing with [APM](https://github.com/microsoft/apm). New Tricks is what you use *before* that — see [SPEC.md](SPEC.md) for the full design.
+New Tricks does not manage the skills installed on your machine: that is what [APM](https://github.com/microsoft/apm), `npx skills` and plugin marketplaces are for, and what your published repository feeds. See [SPEC.md](SPEC.md) for the full design.
 
 ```
-discover ─► preview ─► install / link to test ─► vendor & customize ─► lint ─► publish
+discover ─► vendor / new ─► edit (branches, variants) ─► link & try with agents ─► lint ─► publish
 ```
 
 ## Install
@@ -22,43 +22,40 @@ The VS Code extension (also Cursor, Windsurf, VSCodium) lives in [`extension/`](
 ## Quick start
 
 ```bash
-# Discover: one search over skill repos, marketplaces, skills.sh, Tessl, ClawHub and GitHub
+# Discover prior art: one search over skill repos, marketplaces, skills.sh, Tessl, ClawHub and GitHub
 tricks search pdf forms --license allow --no-scripts
 tricks show anthropics/skills//skill-creator          # licence, risk, catalog signals, files, body
-tricks add clawhub.ai/awspace/skills//pdf             # ClawHub-hosted: SHA-256 verified per file
+tricks link anthropics/skills//webapp-testing         # try it in this project (git status stays clean)
+tricks unlink webapp-testing
 
-# Install for your agents (user scope, content-addressed store + links)
-tricks add anthropics/skills//skill-creator --agents claude,codex
-tricks status
-tricks outdated && tricks update                 # review-first updates
-tricks rollback skill-creator                         # instant, and pinned
-
-# Let your agents drive New Tricks (pre-approves only read-only and branch-confined commands)
-tricks agent-skill --agents claude,codex
-
-# Try a skill inside a project without touching its git status
-tricks link anthropics/skills//webapp-testing --to ~/code/my-app --agents claude
-tricks unlink --all
-```
-
-### Author and customize
-
-```bash
-cd ~/code/my-skills && tricks init                    # any git repo becomes a source repo
+# Start a source repo: any git repository
+cd ~/code/my-skills && tricks init [--agent-skill]    # --agent-skill: teach this repo's agents New Tricks
 tricks vendor anthropics/skills//skill-creator        # copy upstream in, record its base
+tricks vendor clawhub.ai/awspace/skills//pdf          # catalog-hosted skills too (SHA-256 verified per file)
+tricks vendor ~/old/my-skill                          # or a local folder
 tricks new changelog-writer --description "Writes release notes… Use when …"
-tricks install                                        # dev-link source repo skills: edits are live
 
-tricks edit changelog-writer --branch terse           # worktree experiment, agents load the draft
-tricks commit changelog-writer -m "Terser output"
-tricks use changelog-writer@terse [--local]           # pick the deployed variant
+# Try your skills with real agents
+tricks link                                           # every skill, user-level agent dirs, dev mode: edits are live
+tricks link changelog-writer --to ~/code/my-app       # or one skill into one project
+tricks status                                         # skills, variants, upstream changes, links
 
-tricks update skill-creator                           # 3-way merge upstream changes into yours
-tricks update --continue | --abort                    # after resolving conflicts
+# Experiment
+tricks edit changelog-writer --branch terse           # worktree; linked agents load the draft
+git -C <worktree> commit -am "Terser output" && tricks edit changelog-writer --done
+tricks use changelog-writer@terse [--local]           # pick the variant links deploy
+
+# Keep up with upstream
+tricks merge --dry-run                                # what changed upstream, with a risk summary
+tricks merge skill-creator                            # 3-way merge into yours, left uncommitted
+tricks merge --continue | --abort                     # after resolving conflicts
 tricks diff skill-creator --from base --to working    # what did I change?
-tricks lint [--fix] [--strict]                            # --strict: keys outside the spec are errors, like skills-ref
-tricks pr skill-creator                               # send your change upstream
+tricks contribute skill-creator                       # offer your change upstream as a pull request
+
+tricks lint [--fix] [--strict]                        # --strict: keys outside the spec are errors, like skills-ref
 ```
+
+To have the bundled `new-tricks` agent skill everywhere, install it like any published skill: `npx skills add new-tricks/tricks`.
 
 ### Publish
 
@@ -74,7 +71,7 @@ tricks publish public --dry-run
 tricks publish public --bump minor --push   # or --pr for a reviewed pull request
 ```
 
-The target gets `skills/<name>/`, a Claude `marketplace.json`, `apm.yml`, `PROVENANCE.md` and `CHANGELOG.md`, and is tagged `vX.Y.Z`. Gates: committed source, zero lint errors, licence policy for vendored skills, leak check, risk diff.
+The target gets `skills/<name>/`, a Claude `marketplace.json`, `apm.yml`, `PROVENANCE.md` and `CHANGELOG.md`, and is tagged `vX.Y.Z`. Gates: committed source, zero lint errors, licence policy for vendored skills, leak check, risk diff. A vendored skill whose licence blocks publishing can be allowed with a written reason: `[skills.<name>] license-override = { justification = "…" }`.
 
 ## Skill references
 
@@ -91,12 +88,11 @@ https://github.com/anthropics/skills/tree/main/skills/pdf
 
 | File | Purpose |
 |---|---|
-| `~/.config/newtricks/tricks.toml` | User config: settings, catalogs, user-scope installs, registered source repos |
-| `~/.config/newtricks/tricks.lock` | Resolved commits and tree hashes |
+| `~/.config/newtricks/tricks.toml` | User config: settings, catalogs, registered source repos |
 | `<source-repo>/tricks.toml` / `.lock` | Source repo skills, upstreams, lint config, publish targets / recorded bases |
 | `<source-repo>/tricks.work.toml` | Machine-local variant overrides (gitignored) |
 
-Data (store, mirrors, worktrees, `state.db`) lives in `~/Library/Application Support/newtricks` (macOS), `$XDG_DATA_HOME/newtricks` (Linux) or `%LOCALAPPDATA%\newtricks` (Windows).
+Data (store cache, mirrors, worktrees, `state.db`) lives in `~/Library/Application Support/newtricks` (macOS), `$XDG_DATA_HOME/newtricks` (Linux) or `%LOCALAPPDATA%\newtricks` (Windows).
 
 Environment overrides: `TRICKS_HOME`, `TRICKS_CONFIG_DIR`, `TRICKS_DATA_DIR`, `TRICKS_GITHUB_TOKEN`, `TRICKS_LINK_MODE` (`copy`, `link`, or `agent=mode,…`).
 
@@ -105,7 +101,7 @@ Environment overrides: `TRICKS_HOME`, `TRICKS_CONFIG_DIR`, `TRICKS_DATA_DIR`, `T
 ```bash
 cargo test                      # unit + hermetic integration tests (local "GitHub" fixtures)
 cargo clippy --all-targets
-cd extension && npm ci && npx tsc -p . && node out/test/protocol.test.js
+cd extension && npm ci && npx tsc -p . && npm test   # protocol + webview (jsdom) tests
 ```
 
 Integration tests run the real binary against local repositories via `TRICKS_HOST_MAP="github.com=<dir>"`.

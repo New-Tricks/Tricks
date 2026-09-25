@@ -33,7 +33,6 @@ export function discoverHtml(p: DiscoverPage): string {
       <select id="trust" title="Trust"><option value="">any trust</option><option>yours</option><option>org</option><option>official</option><option>starred</option><option>unknown</option></select>
       <select id="license" title="Licence"><option value="">any licence</option><option value="allow">open</option><option value="weak-copyleft">weak copyleft</option><option value="strong-copyleft">strong copyleft</option><option value="unknown">unknown</option><option value="block">restricted</option></select>
       <label><input id="noScripts" type="checkbox"> no scripts</label>
-      <label><input id="installed" type="checkbox"> installed</label>
     </div>
   </form>
   <div id="status"></div>

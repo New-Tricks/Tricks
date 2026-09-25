@@ -4,10 +4,10 @@ import { TricksClient, withProgress } from "./client";
 import { LintDiagnostics } from "./diagnostics";
 import { DiscoverView } from "./discover";
 import { SCHEME, SkillDocumentProvider, remoteUri, versionUri } from "./docs";
-import { Model } from "./model";
+import { LinkInfo, Model } from "./model";
 import { PublishPanel } from "./publish";
 import { FrontmatterAssist } from "./frontmatter";
-import { InstalledTree, SkillItem, SourceRepoTree } from "./trees";
+import { LinksTree, SkillItem, SourceRepoTree } from "./trees";
 
 const AGENTS = [
   { id: "claude", label: "Claude Code" },
@@ -29,18 +29,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, docs),
     vscode.window.registerWebviewViewProvider(DiscoverView.id, discover, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.window.registerTreeDataProvider("tricks.sourceRepo", new SourceRepoTree(model)),
-    vscode.window.registerTreeDataProvider("tricks.installed", new InstalledTree(model)),
+    vscode.window.registerTreeDataProvider("tricks.links", new LinksTree(model)),
     vscode.languages.registerCompletionItemProvider({ language: "markdown", pattern: "**/SKILL.md" }, new FrontmatterAssist(), ":"),
     vscode.languages.registerHoverProvider({ language: "markdown", pattern: "**/SKILL.md" }, new FrontmatterAssist()),
   );
 
   const renderStatus = () => {
     const st = model.status;
-    const updates = (st?.user.updates_ready ?? 0) + (st?.source_repo?.skills.filter((s) => s.update_available).length ?? 0);
+    const updates = st?.source_repo?.skills.filter((s) => s.update_available).length ?? 0;
     const merging = st?.source_repo?.skills.filter((s) => s.merge_in_progress).length ?? 0;
-    const links = st?.user.links.length ?? 0;
+    const links = st?.links.length ?? 0;
     const parts: string[] = [];
-    if (updates) parts.push(`$(sync) ${updates} update${updates > 1 ? "s" : ""}`);
+    if (updates) parts.push(`$(cloud-download) ${updates} upstream`);
     if (merging) parts.push(`$(git-merge) merging`);
     if (lint.errors) parts.push(`$(error) ${lint.errors} lint`);
     else if (lint.warnings) parts.push(`$(warning) ${lint.warnings} lint`);
@@ -57,13 +57,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     renderStatus();
   };
 
-  // Periodic update check while VS Code is open (fetches are throttled by the core).
+  // Periodic check of vendored skills' upstreams while VS Code is open (fetches are
+  // throttled by the core's fetch_interval).
   const check = async () => {
     try {
-      await client.request("user/outdated", {}, { confirm: false });
-      if (model.status?.source_repo) await client.request("sourceRepo/outdated", {}, { confirm: false });
+      if (model.status?.source_repo) await client.request("sourceRepo/merge", { dryRun: true }, { confirm: false });
     } catch (e) {
-      client.output.appendLine(`update check failed: ${e instanceof Error ? e.message : String(e)}`);
+      client.output.appendLine(`upstream check failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     await refreshAll();
   };
@@ -111,6 +111,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     return picks?.map((p) => p.id);
   };
 
+  const pickProject = async (openLabel: string): Promise<string | undefined> => {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const repo = wsRoot();
+    const candidates = folders.map((f) => f.uri.fsPath).filter((f) => f !== repo);
+    if (candidates.length === 1) return candidates[0];
+    const picked = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, openLabel, defaultUri: folders[0]?.uri });
+    return picked?.[0]?.fsPath;
+  };
+  // `link`, offering --shadow when a skill of the same name is already there.
+  const linkWithShadow = (title: string, params: { skill: string; to: string; agents: string[] }) =>
+    withProgress(title, async () => {
+      try {
+        return await client.request("link", params);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("--shadow")) {
+          const ok = await vscode.window.showWarningMessage(`${msg}\n\nBack up the existing skill and replace it (restored on unlink)?`, { modal: true }, "Shadow");
+          if (ok) return client.request("link", { ...params, shadow: true });
+          return undefined;
+        }
+        throw e;
+      }
+    });
+
   const reg = (id: string, fn: (...args: any[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
   reg("tricks.refresh", refreshAll);
@@ -129,8 +153,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     await vscode.commands.executeCommand("markdown.showPreview", remoteUri(info.canonical, "SKILL.md"));
     const lic = `${info.license.spdx ?? "no licence"} (${info.license.class})`;
     const risk = info.risk_summary.length ? ` · ${info.risk_summary.join("; ")}` : "";
-    const choice = await vscode.window.showInformationMessage(`${info.name} — ${info.trust} · ${lic}${risk}`, "Install…", "Vendor", "Files…");
-    if (choice === "Install…") await vscode.commands.executeCommand("tricks.install", info.canonical);
+    const choice = await vscode.window.showInformationMessage(`${info.name} — ${info.trust} · ${lic}${risk}`, "Try in Project…", "Vendor", "Files…");
+    if (choice === "Try in Project…") await vscode.commands.executeCommand("tricks.try", info.canonical);
     if (choice === "Vendor") await vscode.commands.executeCommand("tricks.vendor", info.canonical);
     if (choice === "Files…") await vscode.commands.executeCommand("tricks.previewFile", info.canonical, info.files);
   });
@@ -149,13 +173,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     else await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: true });
   });
 
-  reg("tricks.install", async (id?: string) => {
-    const skill = id ?? (await vscode.window.showInputBox({ prompt: "Skill to install (owner/repo//name)" }));
+  // Link an upstream skill into a project to try it, without vendoring it.
+  reg("tricks.try", async (id?: string) => {
+    const skill = id ?? (await vscode.window.showInputBox({ prompt: "Upstream skill to try (owner/repo//name, URL or catalog id)" }));
     if (!skill) return;
+    const folder = await pickProject("Try it in this project");
+    if (!folder) return;
     const agents = await pickAgents();
     if (!agents?.length) return;
-    const r = await withProgress(`New Tricks: installing ${skill}`, () => client.request("user/add", { skill, agents }));
-    if (r) vscode.window.showInformationMessage(`Installed ${r.name} for ${r.agents.join(", ")}${r.risk.length ? ` — ${r.risk.join("; ")}` : ""}`);
+    const r = await linkWithShadow(`New Tricks: linking ${skill}`, { skill, to: folder, agents });
+    const l = r?.links?.[0];
+    if (l) vscode.window.showInformationMessage(`Trying ${l.name} in ${path.basename(folder)} for ${l.placements.map((p: any) => p[0]).join(", ")}${r.errors?.length ? "" : " (git status stays clean)"}.`);
     await refreshAll();
   });
 
@@ -172,39 +200,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     await refreshAll();
     await openSkillMd(path.join(wsRoot()!, r.path));
     vscode.window.showInformationMessage(`Vendored ${r.name} (${r.license?.spdx ?? "no licence"}). Review and commit when ready.`);
-  });
-
-  reg("tricks.remove", async (item?: SkillItem) => {
-    if (!item) return;
-    const ok = await vscode.window.showWarningMessage(`Remove ${item.label} from your user skills?`, { modal: true }, "Remove");
-    if (!ok) return;
-    await withProgress("New Tricks: removing", () => client.request("user/remove", { skill: item.skillName }));
-    await refreshAll();
-  });
-
-  reg("tricks.userUpdate", async () => {
-    const r = await withProgress("New Tricks: checking for updates", () => client.request("user/outdated", {}, { confirm: false }));
-    if (!r) return;
-    if (!r.pending.length) {
-      vscode.window.showInformationMessage("All user skills are up to date.");
-      return;
-    }
-    const pendingItems: (vscode.QuickPickItem & { id: string })[] = r.pending.map((p: any) => ({ label: p.name, description: `${p.from_ref} → ${p.to_ref}`, detail: p.details.slice(0, 4).join(" · "), id: p.id }));
-    const picks = await vscode.window.showQuickPick(
-      pendingItems,
-      { canPickMany: true, placeHolder: "Apply which updates? (you will see the risk summary for each)" },
-    );
-    for (const p of picks ?? []) {
-      await withProgress(`New Tricks: updating ${p.label}`, () => client.request("user/update", { skill: p.id }));
-    }
-    await refreshAll();
-  });
-
-  reg("tricks.rollback", async (item?: SkillItem) => {
-    if (!item) return;
-    const r = await withProgress("New Tricks: rolling back", () => client.request("user/rollback", { skill: item.skillName }));
-    if (r) vscode.window.showInformationMessage(`Rolled back ${item.label} and pinned it.`);
-    await refreshAll();
   });
 
   reg("tricks.initSourceRepo", async () => {
@@ -290,42 +285,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     }
   };
 
-  reg("tricks.update", async (arg?: unknown) => {
+  reg("tricks.merge", async (arg?: unknown) => {
     const name = await pickRepoSkill(arg, (s) => !!s.upstream);
     if (!name) return;
-    const r = await withProgress(`New Tricks: merging upstream into ${name}`, () => client.request("sourceRepo/update", { skill: name }));
+    const r = await withProgress(`New Tricks: merging upstream into ${name}`, () => client.request("sourceRepo/merge", { skill: name }));
     if (!r) return;
     const it = r.items[0];
     await refreshAll();
     if (!it) return;
     if (it.state === "conflicts") {
       vscode.window.showWarningMessage(`${name}: ${it.outcome.conflicts.length} conflict(s). Resolve them, then run “Continue Upstream Merge”.`, "Continue Merge", "Abort").then((c) => {
-        if (c === "Continue Merge") vscode.commands.executeCommand("tricks.updateContinue", name);
-        if (c === "Abort") vscode.commands.executeCommand("tricks.updateAbort", name);
+        if (c === "Continue Merge") vscode.commands.executeCommand("tricks.mergeContinue", name);
+        if (c === "Abort") vscode.commands.executeCommand("tricks.mergeAbort", name);
       });
       await openConflicts(name, it.outcome.conflicts);
     } else if (it.state === "merged") {
       const risk = it.risk.length ? ` Risk: ${it.risk.join("; ")}` : "";
-      const c = await vscode.window.showInformationMessage(`${name}: merged ${it.to_ref ?? ""} into the working tree (uncommitted).${risk}`, "Review in Source Control", "Commit…");
+      const c = await vscode.window.showInformationMessage(
+        `${name}: merged ${it.to_ref ?? ""} into the working tree (uncommitted). Agents keep the previous version until you commit.${risk}`,
+        "Review in Source Control",
+      );
       if (c === "Review in Source Control") await vscode.commands.executeCommand("workbench.view.scm");
-      if (c === "Commit…") await vscode.commands.executeCommand("tricks.commit", name);
     } else {
       vscode.window.showInformationMessage(`${name}: ${it.state}${it.message ? ` — ${it.message}` : ""}`);
     }
   });
 
-  reg("tricks.updateContinue", async (arg?: unknown) => {
+  reg("tricks.mergeContinue", async (arg?: unknown) => {
     const name = await pickRepoSkill(arg, (s) => s.merge_in_progress);
     if (!name) return;
-    const r = await withProgress("New Tricks: completing merge", () => client.request("sourceRepo/update", { skill: name, continue: true }));
+    const r = await withProgress("New Tricks: completing merge", () => client.request("sourceRepo/merge", { skill: name, continue: true }));
     if (r) vscode.window.showInformationMessage(`${name}: merge completed (uncommitted). Review and commit.`);
     await refreshAll();
   });
 
-  reg("tricks.updateAbort", async (arg?: unknown) => {
+  reg("tricks.mergeAbort", async (arg?: unknown) => {
     const name = await pickRepoSkill(arg, (s) => s.merge_in_progress);
     if (!name) return;
-    await withProgress("New Tricks: aborting merge", () => client.request("sourceRepo/update", { skill: name, abort: true }));
+    await withProgress("New Tricks: aborting merge", () => client.request("sourceRepo/merge", { skill: name, abort: true }));
     await refreshAll();
   });
 
@@ -338,16 +335,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     if (!r) return;
     await refreshAll();
     await openSkillMd(r.path);
-    vscode.window.showInformationMessage(`Editing ${name} on ${branch}. Agents now load this draft; commit with “Commit Skill…”.`);
+    vscode.window.showInformationMessage(`Editing ${name} on ${branch}. Linked agents now load this draft; commit on the branch with git, then “Finish Editing”.`);
   });
 
-  reg("tricks.commit", async (arg?: unknown) => {
-    const name = await pickRepoSkill(arg);
+  reg("tricks.editDone", async (arg?: unknown) => {
+    const name = await pickRepoSkill(arg, (s) => !!s.editing);
     if (!name) return;
-    const message = await vscode.window.showInputBox({ prompt: `Commit message for ${name}` });
-    if (!message) return;
-    const r = await withProgress(`New Tricks: committing ${name}`, () => client.request("sourceRepo/commit", { skill: name, message }));
-    if (r) vscode.window.showInformationMessage(r.commit ? `Committed ${name} (${String(r.commit).slice(0, 9)})${r.branch ? ` on ${r.branch}` : ""}` : `No changes to commit for ${name}`);
+    const r = await withProgress(`New Tricks: finishing ${name}`, () => client.request("sourceRepo/edit", { skill: name, done: true }));
+    if (r) vscode.window.showInformationMessage(`Finished editing ${name}; links deploy its active variant again.`);
     await refreshAll();
   });
 
@@ -373,33 +368,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     await refreshAll();
   });
 
+  reg("tricks.linkAll", async () => {
+    const r = await withProgress("New Tricks: linking source repo skills", () => client.request("link", {}));
+    if (!r) return;
+    const failed = r.errors.length ? ` (${r.errors.length} failed: ${r.errors.map((e: any) => e[0]).join(", ")})` : "";
+    vscode.window.showInformationMessage(`Linked ${r.links.length} skill(s) for your agents${failed}. Edits are live.`);
+    await refreshAll();
+  });
+
   reg("tricks.linkToProject", async (arg?: unknown) => {
     const name = await pickRepoSkill(arg);
     if (!name) return;
-    const folder = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, openLabel: "Link into this project" });
-    if (!folder?.[0]) return;
+    const folder = await pickProject("Link into this project");
+    if (!folder) return;
     const agents = await pickAgents();
     if (!agents?.length) return;
-    const r = await withProgress(`New Tricks: linking ${name}`, async () => {
-      try {
-        return await client.request("link", { skill: name, to: folder[0].fsPath, agents });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes("--shadow")) {
-          const ok = await vscode.window.showWarningMessage(`${msg}\n\nBack up the existing skill and replace it (restored on unlink)?`, { modal: true }, "Shadow");
-          if (ok) return client.request("link", { skill: name, to: folder[0].fsPath, agents, shadow: true });
-          return undefined;
-        }
-        throw e;
-      }
-    });
-    if (r) vscode.window.showInformationMessage(`Linked ${r.name} into ${path.basename(folder[0].fsPath)} for ${r.placements.map((p: any) => p[0]).join(", ")} (git status stays clean).`);
+    const r = await linkWithShadow(`New Tricks: linking ${name}`, { skill: name, to: folder, agents });
+    const l = r?.links?.[0];
+    if (l) vscode.window.showInformationMessage(`Linked ${l.name} into ${path.basename(folder)} for ${l.placements.map((p: any) => p[0]).join(", ")} (git status stays clean).`);
+    await refreshAll();
+  });
+
+  reg("tricks.unlink", async (item?: SkillItem) => {
+    const l = item?.data as LinkInfo | undefined;
+    if (!l) return;
+    await withProgress("New Tricks: unlinking", () => client.request("unlink", { skill: l.skill, ...(l.scope === "global" ? { global: true } : { to: l.scope }) }));
     await refreshAll();
   });
 
   reg("tricks.unlinkAll", async () => {
-    const r = await withProgress("New Tricks: removing test links", () => client.request("unlink", { all: true }));
-    if (r) vscode.window.showInformationMessage(`Removed ${r.removed.length} test deployment(s).`);
+    const r = await withProgress("New Tricks: removing links", () => client.request("unlink", { all: true }));
+    if (r) vscode.window.showInformationMessage(`Removed ${r.removed.length} link(s).`);
     await refreshAll();
   });
 
@@ -414,12 +413,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     await refreshAll();
   });
 
-  reg("tricks.pr", async (arg?: unknown) => {
+  reg("tricks.contribute", async (arg?: unknown) => {
     const name = await pickRepoSkill(arg, (s) => !!s.upstream);
     if (!name) return;
     const title = await vscode.window.showInputBox({ prompt: "Pull request title", value: `Improve ${name} skill` });
     if (!title) return;
-    const r = await withProgress(`New Tricks: preparing pull request for ${name}`, () => client.request("pr", { skill: name, title }));
+    const r = await withProgress(`New Tricks: preparing pull request for ${name}`, () => client.request("contribute", { skill: name, title }));
     if (r?.url) {
       const open = await vscode.window.showInformationMessage(`Opened ${r.url}`, "Open");
       if (open) vscode.env.openExternal(vscode.Uri.parse(r.url));
@@ -436,11 +435,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
 
   reg("tricks.statusActions", async () => {
     const items = [
-      { label: "$(sync) Review user skill updates", cmd: "tricks.userUpdate" },
       { label: "$(search) Search skills", cmd: "tricks.search" },
+      { label: "$(link) Link source repo skills", cmd: "tricks.linkAll" },
+      { label: "$(cloud-download) Check upstream changes", cmd: "tricks.checkUpstream" },
       { label: "$(checklist) Lint source repo", cmd: "tricks.lint" },
       { label: "$(rocket) Publish…", cmd: "tricks.publish" },
-      { label: "$(link) Remove all test links", cmd: "tricks.unlinkAll" },
+      { label: "$(debug-disconnect) Remove all links", cmd: "tricks.unlinkAll" },
       { label: "$(pulse) Doctor", cmd: "tricks.doctor" },
       { label: "$(refresh) Refresh", cmd: "tricks.refresh" },
     ];
@@ -457,34 +457,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     }),
   );
 
-  reg("tricks.agentSkill", async () => {
-    const agents = await pickAgents();
-    if (!agents?.length) return;
-    const r = await withProgress("New Tricks: installing the agent skill", () => client.request("agentSkill/install", { agents }));
-    if (r) vscode.window.showInformationMessage(`Installed the New Tricks agent skill for ${agents.join(", ")}.`);
-  });
-
-  // Offer the bundled agent skill once (shared with the CLI's first-run offer).
-  const offerAgentSkill = async () => {
-    try {
-      const st = await client.request("agentSkill/status", {}, { confirm: false });
-      if (!st.offer) return;
-      const choice = await vscode.window.showInformationMessage(
-        "Install the New Tricks agent skill? It lets Claude Code, Codex, Copilot and Cursor search, preview, lint and draft skill changes on branches. Installs and publishes still ask you.",
-        "Install…",
-        "Not now",
-      );
-      if (choice === "Install…") await vscode.commands.executeCommand("tricks.agentSkill");
-      else await client.request("agentSkill/dismiss", {}, { confirm: false });
-    } catch {
-      /* non-fatal */
+  reg("tricks.checkUpstream", async () => {
+    const r = await withProgress("New Tricks: checking upstreams", () => client.request("sourceRepo/merge", { dryRun: true }, { confirm: false }));
+    if (!r) return;
+    await refreshAll();
+    const ready = r.items.filter((i: any) => i.state === "update-available");
+    if (!ready.length) {
+      vscode.window.showInformationMessage("All vendored skills are up to date.");
+      return;
     }
-  };
+    const pick = await vscode.window.showQuickPick(
+      ready.map((i: any) => ({ label: i.name, description: `→ ${i.to_ref ?? ""}`, detail: [...i.incoming.slice(0, 4), ...i.risk.map((x: string) => `risk: ${x}`)].join(" · ") })),
+      { placeHolder: "Merge which skill?" },
+    );
+    if (pick) await vscode.commands.executeCommand("tricks.merge", (pick as any).label);
+  });
 
   renderStatus();
-  refreshAll().then(() => {
-    if (!context.extensionMode || context.extensionMode !== vscode.ExtensionMode.Test) offerAgentSkill();
-  });
+  refreshAll();
   // Exposed for integration tests.
   return { client, model, lint, refreshAll, status, discover, PublishPanel };
 }
