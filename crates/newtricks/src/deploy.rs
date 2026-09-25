@@ -41,6 +41,10 @@ pub struct PlaceRequest<'a> {
     pub commit: Option<String>,
     pub force_copy: bool,
     pub shadow: bool,
+    /// Branch the link is pinned to (source repo skills), if any.
+    pub pin: Option<String>,
+    /// Branch it deploys now (for display).
+    pub branch: Option<String>,
 }
 
 pub fn agent_dir(ctx: &Ctx, agent: &Agent, scope: &Scope) -> PathBuf {
@@ -123,6 +127,8 @@ pub fn place(ctx: &Ctx, req: &PlaceRequest) -> Result<Placement> {
         exclude_file,
         exclude_entry,
         created_at: now(),
+        pin: req.pin.clone(),
+        branch: req.branch.clone(),
     };
     ctx.state.insert_placement(&p)?;
     Ok(p)

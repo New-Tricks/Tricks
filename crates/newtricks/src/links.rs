@@ -23,6 +23,10 @@ pub struct LinkTarget {
     pub dev: bool,
     /// An upstream skill linked without vendoring it.
     pub trial: bool,
+    /// The branch a source repo skill's link is pinned to (`link <skill>@<branch>`).
+    pub pin: Option<String>,
+    /// The branch it deploys.
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,6 +35,12 @@ pub struct Linked {
     pub name: String,
     pub scope: String,
     pub trial: bool,
+    /// The branch a source repo skill's link deploys, and whether it is pinned to it.
+    pub branch: Option<String>,
+    pub pinned: bool,
+    /// working-tree | draft | snapshot (source repo skills)
+    pub source: Option<String>,
+    pub commit: Option<String>,
     /// (agent, path, mode)
     pub placements: Vec<(String, String, String)>,
 }
@@ -109,7 +119,17 @@ fn trial_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
         let doc = SkillDoc::parse(&std::fs::read_to_string(dir.join("SKILL.md"))?);
         let folder = dir.file_name().unwrap().to_string_lossy().to_string();
         let name = doc.name.filter(|n| crate::id::valid_skill_name(n)).unwrap_or(folder);
-        return Ok(LinkTarget { skill: format!("local:{}", dir.display()), name, dir, tree: None, commit: None, dev: true, trial: true });
+        return Ok(LinkTarget {
+            skill: format!("local:{}", dir.display()),
+            name,
+            dir,
+            tree: None,
+            commit: None,
+            dev: true,
+            trial: true,
+            pin: None,
+            branch: None,
+        });
     }
     let spec = crate::lookup::spec_from_input(ctx, input)?;
     let hosted = SkillId::new(spec.source.clone(), &spec.selector);
@@ -125,6 +145,8 @@ fn trial_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
                     commit: Some(st.commit),
                     dev: false,
                     trial: true,
+                    pin: None,
+                    branch: None,
                 })
             }
             crate::hosted::StoreOutcome::Redirect(git_id) => trial_target(ctx, &git_id),
@@ -140,6 +162,8 @@ fn trial_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
         commit: Some(r.reference.commit.clone()),
         dev: false,
         trial: true,
+        pin: None,
+        branch: None,
     })
 }
 
@@ -166,6 +190,10 @@ pub fn link(ctx: &Ctx, input: Option<&str>, o: &LinkOptions) -> Result<LinkRepor
                     name: name.clone(),
                     scope: scope.key(),
                     trial: false,
+                    branch: ps.first().and_then(|p| p.branch.clone()),
+                    pinned: ps.iter().any(|p| p.pin.is_some()),
+                    source: ps.first().map(|p| source_kind(&p.target, p.commit.as_deref()).to_string()),
+                    commit: ps.first().and_then(|p| p.commit.clone()),
                     placements: ps.into_iter().map(|p| (p.agent, p.path, p.mode)).collect(),
                 }),
                 Err(e) => rep.errors.push((name.clone(), format!("{e:#}"))),
@@ -216,11 +244,49 @@ fn place(ctx: &Ctx, t: LinkTarget, o: &LinkOptions, agents_sel: &[&'static Agent
                 commit: t.commit.clone(),
                 force_copy: o.copy,
                 shadow: o.shadow,
+                pin: t.pin.clone(),
+                branch: t.branch.clone(),
             },
         )?;
         placements.push((a.id.to_string(), p.path, p.mode));
     }
-    Ok(Linked { skill: t.skill, name: t.name, scope: scope.key(), trial: t.trial, placements })
+    let source = (!t.trial).then(|| source_kind(&t.dir.to_string_lossy(), t.commit.as_deref()).to_string());
+    Ok(Linked {
+        skill: t.skill,
+        name: t.name,
+        scope: scope.key(),
+        trial: t.trial,
+        branch: t.branch,
+        pinned: t.pin.is_some(),
+        source,
+        commit: t.commit,
+        placements,
+    })
+}
+
+/// Where a source repo skill's link points: `working-tree`, `draft` (an experiment
+/// checked out by `tricks edit`) or `snapshot` (a commit, in the store).
+fn source_kind(target: &str, commit: Option<&str>) -> &'static str {
+    if commit.is_some() {
+        "snapshot"
+    } else if target.replace('\\', "/").contains(&format!("/{}/", crate::config::WORK_DIR)) {
+        "draft"
+    } else {
+        "working-tree"
+    }
+}
+
+/// How a source repo skill's link deploys, for people: `main (working tree, live)`,
+/// `terse (draft, live)`, `verbose @ 3f2a1c9 (snapshot)`; `pinned` when it does not follow
+/// the default.
+pub fn describe(branch: Option<&str>, pinned: bool, source: &str, commit: Option<&str>) -> String {
+    let b = branch.unwrap_or("detached");
+    let pin = if pinned { ", pinned" } else { "" };
+    match (source, commit) {
+        ("snapshot", Some(c)) => format!("{b} @ {} (snapshot{pin})", &c[..c.len().min(7)]),
+        ("draft", _) => format!("{b} (draft, live{pin})"),
+        _ => format!("{b} (working tree, live{pin})"),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -343,10 +409,23 @@ pub struct LinkInfo {
     pub kind: String,
     /// ok | missing | replaced | target-missing | project-missing | drifted
     pub health: String,
+    /// Source repo skills: the branch the link deploys, and whether it is pinned to it
+    /// (`link <skill>@<branch>`) rather than following the skill's default.
+    pub branch: Option<String>,
+    pub pinned: bool,
+    /// Source repo skills: working-tree | draft | snapshot
+    pub source: Option<String>,
+    /// The commit of a snapshot.
+    pub commit: Option<String>,
 }
 
 fn info(p: crate::state::Placement) -> LinkInfo {
+    let dev = p.origin == "source-repo";
     LinkInfo {
+        source: dev.then(|| source_kind(&p.target, p.commit.as_deref()).to_string()),
+        branch: p.branch.clone().filter(|_| dev),
+        pinned: p.pin.is_some(),
+        commit: p.commit.clone(),
         health: deploy::health(&p),
         kind: if p.origin == "source-repo" { "dev".into() } else { "trial".into() },
         name: placement_name(&p),

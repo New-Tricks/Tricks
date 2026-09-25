@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Render the Homebrew formula for a release: insert the tagged source tarball's
 # `url` and `sha256` after `homepage`.
-#   packaging/homebrew/render.sh v0.1.0 > Formula/newtricks.rb
+#   packaging/homebrew/render.sh v0.1.0 > Formula/tricks.rb
 set -euo pipefail
 tag="${1:?usage: render.sh <tag>}"
 repo="${GITHUB_REPOSITORY:-new-tricks/tricks}"
@@ -13,4 +13,4 @@ if command -v sha256sum >/dev/null; then sha="$(sha256sum "$tarball" | cut -d' '
 awk -v url="$url" -v sha="$sha" '
   { print }
   /^  homepage / { print "  url \"" url "\""; print "  sha256 \"" sha "\"" }
-' "$(dirname "$0")/newtricks.rb"
+' "$(dirname "$0")/tricks.rb"

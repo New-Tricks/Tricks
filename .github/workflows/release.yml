@@ -136,11 +136,15 @@ jobs:
         if: env.TAP_KEY != ''
         run: |
           set -euo pipefail
-          tricks/packaging/homebrew/render.sh "$TAG" > tap/Formula/newtricks.rb
-          brew style tap/Formula/newtricks.rb
+          tricks/packaging/homebrew/render.sh "$TAG" > tap/Formula/tricks.rb
+          brew style tap/Formula/tricks.rb
           cd tap
-          if git diff --quiet; then echo "Formula already up to date"; exit 0; fi
+          # The formula was `newtricks` until 0.6: drop it and let `brew update` migrate installs.
+          rm -f Formula/newtricks.rb
+          echo '{ "newtricks": "tricks" }' > formula_renames.json
+          git add -A
+          if [ -z "$(git status --porcelain)" ]; then echo "Formula already up to date"; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "newtricks ${TAG#v}"
+          git commit -m "tricks ${TAG#v}"
           git push

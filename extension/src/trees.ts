@@ -34,7 +34,7 @@ export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
       return ws.skills.map((s) => {
         const it = new SkillItem(s.name, s.name, vscode.TreeItemCollapsibleState.Collapsed, "repoSkill", s);
         const badges: string[] = [];
-        if (s.merge_in_progress) badges.push("syncing");
+        if (s.merge_in_progress) badges.push("updating");
         if (s.update_available) badges.push(`update ${s.update_available}`);
         if (s.customized) badges.push("customized");
         if (s.lint_errors) badges.push(`${s.lint_errors} lint error${s.lint_errors > 1 ? "s" : ""}`);
@@ -46,7 +46,7 @@ export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
         const ctx = ["repoSkill"];
         if (s.upstream) ctx.push("vendored");
         if (s.update_available) ctx.push("updateReady");
-        if (s.merge_in_progress) ctx.push("syncing");
+        if (s.merge_in_progress) ctx.push("updating");
         if (s.editing) ctx.push("editing");
         it.contextValue = ctx.join(" ");
         it.iconPath = new vscode.ThemeIcon(
@@ -75,10 +75,10 @@ export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
     };
     const out: SkillItem[] = [];
     out.push(d(s.upstream ? `from ${s.upstream.replace(/^github\.com\//, "")}` : "local original", s.upstream ? "repo" : "home"));
-    if (s.update_available) out.push(d(`upstream has ${s.update_available} — sync`, "cloud-download", { command: "tricks.sync", title: "Sync", arguments: [e] }));
+    if (s.update_available) out.push(d(`upstream has ${s.update_available} — update`, "cloud-download", { command: "tricks.update", title: "Update", arguments: [e] }));
     if (s.merge_in_progress) {
-      out.push(d("sync in progress — continue", "check", { command: "tricks.syncContinue", title: "Continue", arguments: [e] }));
-      out.push(d("abort sync", "discard", { command: "tricks.syncAbort", title: "Abort", arguments: [e] }));
+      out.push(d("update in progress — continue", "check", { command: "tricks.updateContinue", title: "Continue", arguments: [e] }));
+      out.push(d("abort update", "discard", { command: "tricks.updateAbort", title: "Abort", arguments: [e] }));
     }
     if (s.upstream) out.push(d("show changes…", "diff", { command: "tricks.changes", title: "Changes", arguments: [e] }));
     for (const b of s.branches) {
@@ -136,10 +136,20 @@ export function linkSkillName(l: LinkInfo): string {
   return l.skill.replace(/^github\.com\//, "");
 }
 
+/** What a source repo skill's link deploys: `main (live)`, `terse (draft, pinned)`, `verbose @ 3f2a1c9`. */
+export function linkBranch(l: LinkInfo): string {
+  if (!l.source) return "";
+  const b = l.branch ?? "detached";
+  const notes = [l.source === "snapshot" ? "" : l.source === "draft" ? "draft" : "live", l.pinned ? "pinned" : ""].filter(Boolean);
+  const at = l.source === "snapshot" && l.commit ? ` @ ${l.commit.slice(0, 7)}` : "";
+  return `${b}${at}${notes.length ? ` (${notes.join(", ")})` : ""}`;
+}
+
 function linkItem(l: LinkInfo): SkillItem {
   const scope = l.scope === "global" ? "user-level" : path.basename(l.scope);
   const it = new SkillItem(l.skill, `${linkSkillName(l)} · ${l.agent}`, vscode.TreeItemCollapsibleState.None, "link", l);
-  it.description = `${scope} · ${l.mode}${l.health !== "ok" ? ` · ${l.health}` : ""}`;
+  const from = linkBranch(l);
+  it.description = `${scope}${from ? ` · ${from}` : ""} · ${l.mode}${l.health !== "ok" ? ` · ${l.health}` : ""}`;
   it.tooltip = `${l.path}\n${l.skill}`;
   it.iconPath = new vscode.ThemeIcon(l.health === "ok" ? "pass" : "warning");
   it.contextValue = l.kind === "trial" ? "trial" : "link";

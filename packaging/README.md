@@ -4,8 +4,8 @@
 
 | Channel | How |
 |---|---|
-| GitHub Releases | Tag `vX.Y.Z` → `.github/workflows/release.yml` builds `tricks-<target>.tar.gz` + `.sha256` for macOS (arm64, x64), Linux (x64, arm64) and Windows (x64, arm64). `tricks self-update` consumes these. |
-| Homebrew | Tap [`new-tricks/homebrew-tap`](https://github.com/new-tricks/homebrew-tap), formula `Formula/newtricks.rb` (installs the `tricks` binary; source copy in `packaging/homebrew/`). `brew install new-tricks/tap/newtricks`. The release workflow renders `packaging/homebrew/newtricks.rb` with the tag's source tarball `url`/`sha256` (`render.sh`), runs `brew style`, and pushes it to the tap using the `HOMEBREW_TAP_DEPLOY_KEY` secret (a write deploy key on the tap). Edit the template here, never the tap directly. Move to homebrew-core later. `self-update` defers to `brew upgrade`. |
+| GitHub Releases | Tag `vX.Y.Z` → `.github/workflows/release.yml` builds `tricks-<target>.tar.gz` + `.sha256` for macOS (arm64, x64), Linux (x64, arm64) and Windows (x64, arm64). `tricks upgrade` consumes these. |
+| Homebrew | Tap [`new-tricks/homebrew-tap`](https://github.com/new-tricks/homebrew-tap), formula `Formula/tricks.rb` (was `newtricks` until 0.6; the tap's `formula_renames.json` migrates existing installs; source copy in `packaging/homebrew/`). `brew install new-tricks/tap/tricks`. The release workflow renders `packaging/homebrew/tricks.rb` with the tag's source tarball `url`/`sha256` (`render.sh`), runs `brew style`, and pushes it to the tap using the `HOMEBREW_TAP_DEPLOY_KEY` secret (a write deploy key on the tap). Edit the template here, never the tap directly. Move to homebrew-core later. `upgrade` defers to `brew upgrade`. |
 | VS Code Marketplace | Platform-specific VSIX per target, each bundling its binary in `extension/bin/`. Needs the `VSCE_PAT` secret and a registered publisher (the placeholder `publisher` in `extension/package.json` is `newtricks`). Without the secret the step is skipped; upload the VSIX files by hand at marketplace.visualstudio.com/manage. Temporary — see [Later](#later). |
 | Open VSX (Cursor, Windsurf, VSCodium) | Same VSIX files; needs the `OVSX_PAT` secret. |
 

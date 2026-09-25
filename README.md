@@ -11,7 +11,7 @@ discover ─► create / vendor ─► edit on a branch ─► link & try with a
 ## Install
 
 ```bash
-brew install new-tricks/tap/newtricks
+brew install new-tricks/tap/tricks
 cargo install --path crates/newtricks          # from a checkout
 ```
 
@@ -41,21 +41,22 @@ tricks list                                           # skills, variants, upstre
 # Try your skills with real agents
 tricks link                                           # every skill, user-level agent dirs, dev mode: edits are live
 tricks link changelog-writer --to ~/code/my-app       # or one skill into one project
-tricks list --links                                   # this repo's links (--all: every source repo's)
+tricks list --links                                   # this repo's links and the branch each deploys (--all: every source repo's)
 tricks unlink                                         # remove them
 
 # Experiment on a branch
-tricks edit changelog-writer -b terse --shell         # draft in .tricks/work/terse; linked agents load it
+tricks edit changelog-writer -b terse --shell         # draft in .tricks/work/terse
+tricks link changelog-writer@terse --to ~/code/my-app # this project's agents load the draft; other links stay on main
 cd "$(tricks edit changelog-writer)"                  # ...or cd there (default branch: draft/<skill>)
 tricks edit changelog-writer --commit -m "Terser output"
 tricks diff changelog-writer head..terse
-tricks use changelog-writer@terse [--local]           # pick the variant links deploy
+tricks use changelog-writer@terse [--local]           # pick the variant unpinned links deploy
 tricks merge changelog-writer@terse [--pr] [--whole-branch]   # bring it back (only the skill, by default)
 
 # Keep up with upstream
 tricks outdated [--diff]                              # what changed upstream, with a risk summary
-tricks sync skill-creator [--dry-run]                 # 3-way merge into yours, left uncommitted
-tricks sync --continue | --abort                      # after resolving conflicts
+tricks update skill-creator [--dry-run]               # 3-way merge into yours, left uncommitted
+tricks update --continue | --abort                      # after resolving conflicts
 tricks diff skill-creator base..                      # what did I change?
 tricks contribute skill-creator                       # offer your change upstream as a pull request
 

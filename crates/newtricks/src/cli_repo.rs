@@ -2,7 +2,7 @@
 
 use crate::cli::{Cmd, emit, short};
 use crate::ctx::Ctx;
-use crate::source_repo::{self, RepoStatus, SourceRepo, SyncReport};
+use crate::source_repo::{self, RepoStatus, SourceRepo, UpdateReport};
 use anyhow::{Result, bail};
 use serde::Serialize;
 
@@ -110,13 +110,19 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
             let r = if done { source_repo::edit_done(ctx, &skill)? } else { source_repo::edit(ctx, &skill, branch.as_deref())? };
             emit(json, &r, |r| {
                 println!("{}", r.path);
+                let b = r.branch.as_deref().unwrap_or_default();
                 if done {
-                    eprintln!("finished editing `{}`; links deploy its active variant", r.name);
-                } else if let Some(b) = &r.branch {
+                    eprintln!("finished editing `{}`; links pinned to {b} deploy its last commit", r.name);
+                } else {
                     eprintln!(
                         "editing `{}` on branch {b} (`cd \"$(tricks edit {})\"` or `--shell` to work there); commit drafts with `tricks edit {} --commit -m \"…\"`, then `tricks merge {}@{b}`",
                         r.name, r.name, r.name, r.name
                     );
+                }
+                if !r.placements.is_empty() {
+                    eprintln!("links on {b}:");
+                } else if !done {
+                    eprintln!("to try the draft with agents: `tricks link {}@{b}`", r.name);
                 }
                 for p in &r.placements {
                     eprintln!("  → {p}");
@@ -193,10 +199,10 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                 print_diffs(&diffs);
             }
         }
-        Cmd::Sync { skill, dry_run, cont, abort } => {
+        Cmd::Update { skill, dry_run, cont, abort } => {
             let ws = source_repo::require(ctx)?;
-            let o = source_repo::SyncOptions { only: skill.as_deref(), dry_run, cont, abort };
-            let r = source_repo::sync(ctx, &ws, &o)?;
+            let o = source_repo::UpdateOptions { only: skill.as_deref(), dry_run, cont, abort };
+            let r = source_repo::update(ctx, &ws, &o)?;
             if dry_run {
                 let diffs = diffs_for(ctx, &ws, &r, "working", "candidate");
                 if json {
@@ -206,7 +212,7 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                     print_diffs(&diffs);
                 }
             } else {
-                emit(json, &r, print_sync);
+                emit(json, &r, print_update);
             }
         }
         Cmd::Contribute { skill, title, body, dry_run } => {
@@ -262,7 +268,7 @@ fn parse_range(range: Option<&str>) -> Result<(String, String)> {
     for v in [a, b] {
         match v {
             "upstream" | "U" => bail!("compare with upstream using `tricks outdated <skill> --diff`"),
-            "candidate" | "R" => bail!("preview the upstream sync with `tricks sync <skill> --dry-run`"),
+            "candidate" | "R" => bail!("preview the upstream update with `tricks update <skill> --dry-run`"),
             _ => {}
         }
     }
@@ -282,7 +288,7 @@ fn unified(ctx: &Ctx, ws: &SourceRepo, skill: &str, from: &str, to: &str) -> Res
     Ok(out)
 }
 
-fn diffs_for(ctx: &Ctx, ws: &SourceRepo, r: &SyncReport, from: &str, to: &str) -> Vec<(String, Vec<(String, String)>)> {
+fn diffs_for(ctx: &Ctx, ws: &SourceRepo, r: &UpdateReport, from: &str, to: &str) -> Vec<(String, Vec<(String, String)>)> {
     r.items
         .iter()
         .filter(|i| i.state == "update-available")
@@ -351,7 +357,12 @@ fn print_grouped(items: &[crate::links::LinkInfo], dev: bool) {
         for l in items.iter().filter(|l| l.scope == scope) {
             let h = if l.health == "ok" { String::new() } else { format!("  !! {}", l.health) };
             let what = if dev { l.name.clone() } else { l.skill.strip_prefix("github.com/").unwrap_or(&l.skill).to_string() };
-            println!("  {what:<28} {:<8} {} ({}){h}", l.agent, l.path, l.mode);
+            let from = l
+                .source
+                .as_deref()
+                .map(|src| format!("  {}", crate::links::describe(l.branch.as_deref(), l.pinned, src, l.commit.as_deref())))
+                .unwrap_or_default();
+            println!("  {what:<28} {:<8} {} ({}){from}{h}", l.agent, l.path, l.mode);
         }
     }
 }
@@ -403,9 +414,9 @@ fn print_vendor(r: &source_repo::VendorReport) {
     println!("  not committed yet: review and `git commit` when ready; `tricks link {}` to try it", r.name);
 }
 
-fn print_sync(r: &SyncReport) {
+fn print_update(r: &UpdateReport) {
     if r.items.is_empty() {
-        println!("no vendored skills to sync");
+        println!("no vendored skills to update");
     }
     for i in &r.items {
         let to = i.to_ref.clone().or(i.to.as_deref().map(|c| short(c).to_string())).unwrap_or_default();
@@ -436,7 +447,7 @@ fn print_sync(r: &SyncReport) {
     }
 }
 
-fn print_outdated(r: &SyncReport) {
+fn print_outdated(r: &UpdateReport) {
     let mut any = false;
     for i in &r.items {
         if i.state == "up-to-date" {
@@ -474,7 +485,7 @@ pub fn print_repo_status(w: &RepoStatus, links: &[crate::links::LinkInfo]) {
             notes.push(format!("upstream has {u}"));
         }
         if s.merge_in_progress {
-            notes.push("SYNC IN PROGRESS".into());
+            notes.push("UPDATE IN PROGRESS".into());
         }
         if s.uncommitted {
             notes.push("uncommitted".into());
@@ -492,7 +503,14 @@ pub fn print_repo_status(w: &RepoStatus, links: &[crate::links::LinkInfo]) {
             notes.push(format!("branches: {}", s.branches.join(", ")));
         }
         let key = format!("ws:{}//{}", w.root, s.name);
-        let mut places: Vec<String> = links.iter().filter(|l| l.skill == key).map(|l| place_label(&l.scope)).collect();
+        let mut places: Vec<String> = links
+            .iter()
+            .filter(|l| l.skill == key)
+            .map(|l| match &l.branch {
+                Some(b) => format!("{} ({b})", place_label(&l.scope)),
+                None => place_label(&l.scope),
+            })
+            .collect();
         places.sort();
         places.dedup();
         if !places.is_empty() {
