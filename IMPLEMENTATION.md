@@ -10,10 +10,11 @@ Status of the implementation of [SPEC.md](SPEC.md), what was verified and how, t
 | `crates/newtricks/tests/` | Hermetic integration tests: the real binary against local "GitHub" repositories (`TRICKS_HOST_MAP`). |
 | `skills/new-tricks/` | Bundled agent skill (spec §12); also installable with `npx skills add new-tricks/tricks`. |
 | `extension/` | VS Code extension (TypeScript, zero runtime dependencies) over `tricks serve --stdio`. |
-| `.github/workflows/` | CI (Linux/macOS/Windows tests, extension build, extension-host test) and release (6 targets, checksums, platform VSIX, Marketplace/Open VSX publish). |
+| `.github/workflows/` | CI (Linux/macOS/Windows tests, extension build, extension-host test), docs (build on PRs, deploy to Pages from main) and release (6 targets, checksums, platform VSIX, Marketplace/Open VSX publish). |
 | `packaging/` | Homebrew formula template and release checklist. |
+| `docs/` | Documentation site ([new-tricks.github.io/tricks](https://new-tricks.github.io/tricks/)): Astro Starlight, deployed to GitHub Pages by `.github/workflows/docs.yml`. The command and lint rule reference is generated at build time from the binary's `--help` and `lint.rs` (`docs/scripts/gen-reference.mjs`). |
 
-Core modules: `id` (grammar, URL normalization), `resolve` (refs, `@latest`, name lookup), `git` (system git, fetch-only mirrors), `catalogs` + `index` (adapters, FTS5, facets, dedup), `tessl` + `clawhub` (live catalog adapters), `hosted` (catalog-hosted skills: `.well-known` and ClawHub), `live` (concurrent live-query adapters), `store` + `deploy` + `agents` (content-addressed store cache, placements/copies, exclude handling, shadowing), `links` (link/unlink of repo skills and trials), `user` (user config), `source_repo` + `merge` (vendoring, three-way merges for git and catalog-hosted upstreams, variants, worktrees), `lint`, `risk`, `license`, `publish`, `contribute`, `rpc`, `statusline`, `doctor`, `selfupdate`.
+Core modules: `id` (grammar, URL normalization), `resolve` (refs, `@latest`, name lookup), `git` (system git, fetch-only mirrors), `catalogs` + `index` (adapters, FTS5, facets, dedup), `tessl` + `clawhub` (live catalog adapters), `hosted` (catalog-hosted skills: `.well-known` and ClawHub), `live` (concurrent live-query adapters), `store` + `deploy` + `agents` (content-addressed store cache, placements/copies, exclude handling, shadowing), `links` (link/unlink of repo skills and trials), `user` (user config), `source_repo` + `merge` (vendoring, three-way merges for git and catalog-hosted upstreams, variants, worktrees), `lint`, `risk`, `license`, `publish`, `contribute`, `rpc`, `statusline`, `doctor`, `upgrade`.
 
 ## Milestones
 

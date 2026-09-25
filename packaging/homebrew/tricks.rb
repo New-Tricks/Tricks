@@ -10,7 +10,7 @@
 # requirements.
 class Tricks < Formula
   desc "Design-time workbench for agent skills (search, customize, lint, publish)"
-  homepage "https://github.com/new-tricks/tricks"
+  homepage "https://new-tricks.github.io/tricks/"
   license "Apache-2.0"
   head "https://github.com/new-tricks/tricks.git", branch: "main"
 

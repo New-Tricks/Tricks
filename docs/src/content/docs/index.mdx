@@ -1,0 +1,56 @@
+---
+title: New Tricks
+description: The design-time workbench for agent skills. Discover prior art, customize upstream skills, test drafts with real agents, lint, and publish.
+template: splash
+hero:
+  tagline: The design-time workbench for agent skills. Find prior art, customize upstream skills and keep them current, test drafts with real agents, and publish a repository every installer understands.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Get started
+      link: /tricks/getting-started/introduction/
+      icon: right-arrow
+    - text: Install
+      link: /tricks/getting-started/installation/
+      variant: minimal
+    - text: View on GitHub
+      link: https://github.com/new-tricks/tricks
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+```bash
+brew install new-tricks/tap/tricks
+```
+
+Your skills live in a **source repo**: a plain git repository with your own skills and customized copies of upstream ones. `tricks` works on that repository, from the first search to the published release.
+
+```text
+discover ─► create / vendor ─► edit on a branch ─► link & try with agents ─► merge ─► lint ─► publish
+```
+
+<CardGrid>
+	<Card title="Discover" icon="magnifier">
+		One search across skill repositories, plugin marketplaces, skills.sh, Tessl, ClawHub and GitHub, with licence, risk and scripts shown before you touch anything.
+	</Card>
+	<Card title="Customize and keep current" icon="random">
+		Vendor an upstream skill, make it yours, and take upstream improvements later with a three-way merge that keeps your changes.
+	</Card>
+	<Card title="Test with real agents" icon="rocket">
+		Link skills into Claude Code, Codex, Copilot and Cursor, live from your working tree. Pin a link to a branch to put a draft in front of an agent without touching the rest.
+	</Card>
+	<Card title="Lint and publish" icon="approve-check">
+		Spec conformance, triggering quality and safety checks, then one publish that feeds APM, `npx skills`, Claude plugin marketplaces, Copilot, Codex and Cursor.
+	</Card>
+</CardGrid>
+
+## Where to next
+
+<CardGrid>
+	<LinkCard title="Introduction" description="What New Tricks is, what it isn't, and the words it uses." href="/tricks/getting-started/introduction/" />
+	<LinkCard title="Quick start" description="From an empty git repository to a linked, tested skill in ten minutes." href="/tricks/getting-started/quick-start/" />
+	<LinkCard title="Test a draft with agents" description="Compare a branch with main, side by side, in a real project." href="/tricks/guides/test-a-draft-with-agents/" />
+	<LinkCard title="Command reference" description="Every command and option, generated from the CLI." href="/tricks/reference/commands/" />
+</CardGrid>
