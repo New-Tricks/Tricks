@@ -140,6 +140,10 @@ impl Ctx {
     pub fn new(opts: Opts, ui: Box<dyn Ui>) -> Result<Ctx> {
         let paths = Paths::discover()?;
         paths.ensure()?;
+        let cfg = paths.user_config();
+        if !cfg.exists() {
+            crate::config::write_atomic(&cfg, crate::config::initial_user_config().as_bytes())?;
+        }
         let state = State::open(&paths.state_db())?;
         let gh = GitHub::new(opts.offline);
         Ok(Ctx { paths, state, gh, opts, ui })

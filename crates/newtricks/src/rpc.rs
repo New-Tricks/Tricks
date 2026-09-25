@@ -123,6 +123,10 @@ fn file_payload(bytes: &[u8]) -> Value {
     }
 }
 
+fn link_options<'a>(p: &'a Value, agents: &'a [String]) -> crate::links::LinkOptions<'a> {
+    crate::links::LinkOptions { to: s(p, "to"), global: b(p, "global"), agents, copy: b(p, "copy"), shadow: b(p, "shadow") }
+}
+
 pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
     use crate::source_repo as ws;
     match method {
@@ -151,7 +155,7 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
             };
             to(json!({ "results": crate::cli::do_search(ctx, &a)? }))
         }
-        "show" => to(crate::inspect::show(ctx, req(p, "skill")?)?),
+        "info" => to(crate::inspect::info(ctx, req(p, "skill")?)?),
         "file/read" => {
             let (canonical, bytes) = crate::inspect::read_file(ctx, req(p, "skill")?, req(p, "path")?)?;
             let mut v = file_payload(&bytes);
@@ -160,35 +164,34 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
         }
         "catalog/list" => to(json!({ "catalogs": crate::catalogs::list(ctx)? })),
         "catalog/add" => {
+            if b(p, "recommended") {
+                let added = crate::catalogs::add_recommended(ctx)?;
+                let rep = crate::catalogs::refresh(ctx, false, None)?;
+                return to(json!({ "added": added, "refresh": rep }));
+            }
             let (key, kind) = crate::catalogs::add(ctx, req(p, "input")?, s(p, "kind"))?;
             let rep = crate::catalogs::refresh(ctx, true, Some(&key))?;
             to(json!({ "catalog": key, "kind": kind, "refresh": rep }))
         }
         "catalog/remove" => to(json!({ "removed": crate::catalogs::remove(ctx, req(p, "input")?)? })),
         "catalog/refresh" => to(crate::catalogs::refresh(ctx, true, s(p, "catalog"))?),
-        "status" => {
+        "list" => {
             ws::reconcile(ctx)?;
-            to(crate::cli_repo::status(ctx)?)
+            to(crate::cli_repo::list(ctx)?)
         }
-        "link" => to(crate::links::link(
-            ctx,
-            s(p, "skill"),
-            &crate::links::LinkOptions { to: s(p, "to"), global: b(p, "global"), agents: &strs(p, "agents"), copy: b(p, "copy"), shadow: b(p, "shadow") },
-        )?),
-        "unlink" => to(crate::links::unlink(
-            ctx,
-            s(p, "skill"),
-            &crate::links::UnlinkOptions { to: s(p, "to"), global: b(p, "global"), all: b(p, "all"), legacy: b(p, "legacy") },
-        )?),
+        "link" => to(crate::links::link(ctx, s(p, "skill"), &link_options(p, &strs(p, "agents")))?),
+        "try" => to(crate::links::try_skill(ctx, req(p, "skill")?, &link_options(p, &strs(p, "agents")))?),
+        "unlink" => to(crate::links::unlink(ctx, s(p, "skill"), &crate::links::UnlinkOptions { to: s(p, "to"), global: b(p, "global"), all: b(p, "all") })?),
         "agents" => to(crate::agents::AGENTS.iter().map(|a| json!({ "id": a.id, "name": a.display, "userDir": ctx.paths.contract(&a.user_path(&ctx.paths.home)), "projectDir": a.project_dir, "mode": if a.follows_links(&ctx.paths.store()) { "link" } else { "copy" } })).collect::<Vec<_>>()),
         "doctor" => to(crate::doctor::run(ctx)?),
         "sourceRepo/init" => to(ws::init(ctx, s(p, "name"), b(p, "agentSkill"))?),
         "sourceRepo/status" => to(ws::status(ctx, &ws::require(ctx)?)?),
+        "sourceRepo/create" => to(ws::create(ctx, &ws::require(ctx)?, req(p, "name")?, s(p, "description"), s(p, "from"))?),
         "sourceRepo/vendor" => {
-            let o = ws::VendorOptions { name: s(p, "name"), path: s(p, "path"), upstream: s(p, "upstream"), base: s(p, "base") };
+            let o = ws::VendorOptions { name: s(p, "name"), path: s(p, "path"), from: s(p, "from"), base: s(p, "base") };
             to(ws::vendor(ctx, &ws::require(ctx)?, req(p, "skill")?, &o)?)
         }
-        "sourceRepo/new" => to(ws::new_skill(&ws::require(ctx)?, req(p, "name")?, s(p, "description"))?),
+        "sourceRepo/remove" => to(ws::remove(ctx, &ws::require(ctx)?, req(p, "skill")?)?),
         "sourceRepo/lint" => {
             let w = ws::require(ctx)?;
             let names = strs(p, "skills");
@@ -205,21 +208,29 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
             let paths: std::collections::BTreeMap<String, String> = w.manifest.skills.iter().map(|(n, sk)| (n.clone(), w.root.join(&sk.path).to_string_lossy().to_string())).collect();
             to(json!({ "report": r, "skillPaths": paths }))
         }
-        "sourceRepo/merge" => {
-            let o = ws::MergeOptions { only: s(p, "skill"), dry_run: b(p, "dryRun"), cont: b(p, "continue"), abort: b(p, "abort") };
-            to(ws::merge(ctx, &ws::require(ctx)?, &o)?)
+        "sourceRepo/outdated" => to(ws::outdated(ctx, &ws::require(ctx)?, s(p, "skill"))?),
+        "sourceRepo/sync" => {
+            let o = ws::SyncOptions { only: s(p, "skill"), dry_run: b(p, "dryRun"), cont: b(p, "continue"), abort: b(p, "abort") };
+            to(ws::sync(ctx, &ws::require(ctx)?, &o)?)
         }
         "sourceRepo/edit" => {
-            if b(p, "done") {
-                to(ws::edit_done(ctx, req(p, "skill")?)?)
-            } else {
-                to(ws::edit(ctx, req(p, "skill")?, s(p, "branch"))?)
+            let skill = req(p, "skill")?;
+            if b(p, "commit") {
+                let c = ws::commit_draft(ctx, skill, req(p, "message")?)?;
+                if !b(p, "done") {
+                    return to(c);
+                }
             }
+            if b(p, "done") { to(ws::edit_done(ctx, skill)?) } else { to(ws::edit(ctx, skill, s(p, "branch"))?) }
+        }
+        "sourceRepo/merge" => {
+            let o = ws::MergeOptions { whole_branch: b(p, "wholeBranch"), pr: b(p, "pr"), message: s(p, "message") };
+            to(ws::merge_branch(ctx, req(p, "spec")?, &o)?)
         }
         "sourceRepo/use" => to(ws::use_variant(ctx, req(p, "spec")?, b(p, "local"), b(p, "reset"))?),
         "sourceRepo/changedFiles" => {
             let w = ws::require(ctx)?;
-            to(json!({ "files": ws::changed_files(ctx, &w, req(p, "skill")?, s(p, "from").unwrap_or("base"), s(p, "to").unwrap_or("working"))? }))
+            to(json!({ "files": ws::changed_files(ctx, &w, req(p, "skill")?, s(p, "from").unwrap_or("head"), s(p, "to").unwrap_or("working"))? }))
         }
         "sourceRepo/versionFile" => {
             let w = ws::require(ctx)?;

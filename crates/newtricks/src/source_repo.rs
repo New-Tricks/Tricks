@@ -246,9 +246,9 @@ fn track_for(spec: &SkillSpec, kind: &str, name: &str) -> String {
 pub struct VendorOptions<'a> {
     pub name: Option<&'a str>,
     pub path: Option<&'a str>,
-    /// For a local folder: the upstream skill it was copied from.
-    pub upstream: Option<&'a str>,
-    /// For a local folder: the upstream revision the copy started from.
+    /// Take the files from this local copy of the upstream skill (made earlier)...
+    pub from: Option<&'a str>,
+    /// ...which started from this upstream revision (commit, tag, or catalog version).
     pub base: Option<&'a str>,
 }
 
@@ -300,33 +300,41 @@ fn confirm_licence(ctx: &Ctx, what: &str, lic: &config::LicenseRecord) -> Result
     Ok(())
 }
 
-/// Bring a skill into the source repo to customize it: an upstream skill (git or
-/// catalog-hosted; the upstream and base are recorded for `merge`) or a local folder.
+/// Bring an upstream skill (git or catalog-hosted) into the source repo to customize it;
+/// the upstream and base are recorded for `sync`.
 pub fn vendor(ctx: &Ctx, ws: &SourceRepo, input: &str, o: &VendorOptions) -> Result<VendorReport> {
-    let local = {
-        let p = ctx.paths.expand(input);
-        if p.is_absolute() { p } else { ctx.opts.cwd.join(p) }
-    };
-    if local.join("SKILL.md").is_file() && !input.contains("//") {
-        return vendor_folder(ctx, ws, &local, o);
+    if !input.contains("//") && local_skill_dir(ctx, input).is_some() {
+        bail!(
+            "`{input}` is a local folder: add it with `tricks create <name> --from {input}` (or `tricks vendor <upstream> --from {input} --base <rev>` if it is a copy of an upstream skill)"
+        );
     }
-    if o.upstream.is_some() || o.base.is_some() {
-        bail!("--upstream and --base apply when vendoring a local folder");
+    if o.from.is_some() != o.base.is_some() {
+        bail!("--from and --base go together: the local copy and the upstream revision it started from");
     }
     let spec = crate::lookup::spec_from_input(ctx, input)?;
     let hosted_id = SkillId::new(spec.source.clone(), &spec.selector);
     if crate::hosted::kind(&hosted_id).is_some() {
-        return vendor_hosted(ctx, ws, &hosted_id, spec.reference.as_deref().filter(|r| *r != "latest"), o);
+        let version = o.base.or(spec.reference.as_deref().filter(|r| *r != "latest"));
+        return vendor_hosted(ctx, ws, &hosted_id, version, o);
     }
+    let spec = match o.base {
+        Some(b) => SkillSpec { reference: Some(b.to_string()), ..spec },
+        None => spec,
+    };
     let r = resolve_skill(ctx, &spec, Fetch::IfStale)?;
     let name = o.name.map(String::from).unwrap_or_else(|| crate::user::placement_name(&r.name, &r.id));
     let (rel, dest) = destination(ws, &name, o.path)?;
     let store_dir = store::from_mirror(ctx, &r.mirror, &r.reference.commit, &r.id.path, &r.tree)?;
     let lic = crate::inspect::detect_license_in_dir(ctx, &r, &store_dir);
     confirm_licence(ctx, &r.canonical(), &lic)?;
-    store::copy_dir(&store_dir, &dest)?;
+    let src = match o.from {
+        Some(f) => local_skill_dir(ctx, f).with_context(|| format!("{f} has no SKILL.md"))?,
+        None => store_dir,
+    };
+    store::copy_dir(&src, &dest)?;
     let upstream = r.id.to_string();
-    let track = track_for(&spec, &r.reference.kind, &r.reference.name);
+    // A copy vendored at a given base tracks the latest upstream from there.
+    let track = if o.base.is_some() { "latest".to_string() } else { track_for(&spec, &r.reference.kind, &r.reference.name) };
     let locked = RepoLocked {
         base: Some(r.reference.commit.clone()),
         base_tree: Some(r.tree.clone()),
@@ -345,6 +353,9 @@ pub fn vendor(ctx: &Ctx, ws: &SourceRepo, input: &str, o: &VendorOptions) -> Res
 }
 
 fn vendor_hosted(ctx: &Ctx, ws: &SourceRepo, id: &SkillId, version: Option<&str>, o: &VendorOptions) -> Result<VendorReport> {
+    if o.base.is_some() && crate::hosted::kind(id) == Some(crate::hosted::Kind::WellKnown) {
+        bail!("{id}: .well-known catalogs only serve the latest revision, so an earlier base cannot be recorded; vendor it without --base");
+    }
     let st = match crate::hosted::fetch_to_store(ctx, id, version)? {
         crate::hosted::StoreOutcome::Stored(st) => st,
         crate::hosted::StoreOutcome::Redirect(git_id) => {
@@ -357,7 +368,11 @@ fn vendor_hosted(ctx: &Ctx, ws: &SourceRepo, id: &SkillId, version: Option<&str>
     let (rel, dest) = destination(ws, &name, o.path)?;
     let lic = crate::hosted::license(id, &st.dir);
     confirm_licence(ctx, &format!("{id}@{}", st.label), &lic)?;
-    store::copy_dir(&st.dir, &dest)?;
+    let src = match o.from {
+        Some(f) => local_skill_dir(ctx, f).with_context(|| format!("{f} has no SKILL.md"))?,
+        None => st.dir.clone(),
+    };
+    store::copy_dir(&src, &dest)?;
     let upstream = id.to_string();
     let locked =
         RepoLocked { base: Some(st.commit.clone()), base_tree: Some(st.tree.clone()), upstream_path: None, license: Some(lic.clone()) };
@@ -372,39 +387,79 @@ fn vendor_hosted(ctx: &Ctx, ws: &SourceRepo, id: &SkillId, version: Option<&str>
     })
 }
 
-fn vendor_folder(ctx: &Ctx, ws: &SourceRepo, src: &Path, o: &VendorOptions) -> Result<VendorReport> {
-    let doc = SkillDoc::parse(&std::fs::read_to_string(src.join("SKILL.md"))?);
-    let folder_name = crate::paths::canon(src)?.file_name().unwrap().to_string_lossy().to_string();
-    let name = o.name.map(String::from).or(doc.name.clone().filter(|n| valid_skill_name(n))).unwrap_or(folder_name);
-    let (rel, dest) = destination(ws, &name, o.path)?;
-    let mut locked = RepoLocked::default();
-    let mut upstream_id = None;
-    if let Some(u) = o.upstream {
-        let base = o.base.context("--upstream requires --base <commit> (the upstream revision this copy started from)")?;
-        let spec = crate::lookup::spec_from_input(ctx, u)?;
-        let r = resolve_skill(ctx, &SkillSpec { reference: Some(base.to_string()), ..spec }, Fetch::IfStale)?;
-        locked.base = Some(r.reference.commit.clone());
-        locked.base_tree = Some(r.tree.clone());
-        upstream_id = Some(r.id.to_string());
-    } else if o.base.is_some() {
-        bail!("--base needs --upstream");
+fn local_skill_dir(ctx: &Ctx, input: &str) -> Option<PathBuf> {
+    let p = ctx.paths.expand(input);
+    let p = if p.is_absolute() { p } else { ctx.opts.cwd.join(p) };
+    p.join("SKILL.md").is_file().then(|| crate::paths::canon(&p).unwrap_or(p))
+}
+
+/// `tricks create <name> [--from <folder>]`: a new local original, scaffolded or taken
+/// from an existing skill folder.
+pub fn create(ctx: &Ctx, ws: &SourceRepo, name: &str, description: Option<&str>, from: Option<&str>) -> Result<VendorReport> {
+    let Some(f) = from else { return scaffold(ws, name, description) };
+    if description.is_some() {
+        bail!("--description is for new skills; a skill created --from a folder keeps its own");
     }
-    store::copy_dir(src, &dest)?;
+    let src = local_skill_dir(ctx, f).with_context(|| format!("{f} has no SKILL.md"))?;
+    let (rel, dest) = destination(ws, name, None)?;
+    store::copy_dir(&src, &dest)?;
     let lic = crate::license::detect(&crate::inspect::gather_dir(&dest));
-    locked.license = Some(lic.clone());
-    let base_out = locked.base.clone();
-    record(ws, &name, &rel, upstream_id.as_deref().map(|u| (u, "latest")), locked)?;
+    record(ws, name, &rel, None, RepoLocked { license: Some(lic.clone()), ..Default::default() })?;
     Ok(VendorReport {
-        name,
+        name: name.into(),
         path: rel,
-        upstream: upstream_id,
-        base: base_out,
+        upstream: None,
+        base: None,
         license: Some(lic),
         risk: RiskReport::scan_dir(&dest).summary(),
     })
 }
 
-pub fn new_skill(ws: &SourceRepo, name: &str, description: Option<&str>) -> Result<VendorReport> {
+#[derive(Debug, Serialize)]
+pub struct RemoveReport {
+    pub name: String,
+    pub path: String,
+    pub unlinked: Vec<String>,
+}
+
+/// `tricks remove <skill>`: unlink it, delete its folder, and drop it from the manifest
+/// and lock (left uncommitted, like every other change to the repo).
+pub fn remove(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<RemoveReport> {
+    let rel = ws.skill(name)?.path.clone();
+    if merge_state(ctx, ws, name)?.is_some() {
+        bail!("an upstream sync of `{name}` is in progress; finish it with `tricks sync --continue` or `--abort` first");
+    }
+    let dirty = git(&ws.root, &["status", "--porcelain", "--", &rel]).map(|o| !o.trim().is_empty()).unwrap_or(false);
+    if dirty && !ctx.confirm(&format!("`{name}` has uncommitted changes that will be lost. Remove it anyway?"), &[])? {
+        bail!("cancelled");
+    }
+    let mut unlinked = Vec::new();
+    for p in ctx.state.placements("WHERE skill=?1", &[&ws.skill_key(name)])? {
+        deploy::remove_placement(ctx, &p)?;
+        unlinked.push(p.path);
+    }
+    ctx.state.conn.execute(
+        "DELETE FROM meta WHERE key IN (?1, ?2, ?3)",
+        params![editing_key(ws, name), snapshot_key(ws, name), hosted_up_key(ws, name)],
+    )?;
+    let dir = ws.root.join(&rel);
+    if dir.exists() {
+        deploy::remove_path(&dir)?;
+    }
+    ws.edit_doc(|doc| {
+        if let Some(t) = doc.get_mut("skills").and_then(|t| t.as_table_like_mut()) {
+            t.remove(name);
+        }
+        Ok(())
+    })?;
+    let mut lock = ws.lock.clone();
+    lock.skills.remove(name);
+    lock.save(&ws.root)?;
+    let _ = store::gc(ctx, false);
+    Ok(RemoveReport { name: name.into(), path: rel, unlinked })
+}
+
+fn scaffold(ws: &SourceRepo, name: &str, description: Option<&str>) -> Result<VendorReport> {
     if !valid_skill_name(name) {
         bail!("`{name}` is not a valid skill name (lowercase letters, digits and single hyphens; max 64)");
     }
@@ -439,10 +494,10 @@ pub fn new_skill(ws: &SourceRepo, name: &str, description: Option<&str>) -> Resu
     Ok(VendorReport { name: name.into(), path: rel, upstream: None, base: None, license: None, risk: vec![] })
 }
 
-// ---------------------------------------------------------------- upstream merges
+// ---------------------------------------------------------------- upstream sync
 
 #[derive(Debug, Serialize)]
-pub struct MergeItem {
+pub struct SyncItem {
     pub name: String,
     pub from: Option<String>,
     pub to: Option<String>,
@@ -455,9 +510,9 @@ pub struct MergeItem {
     pub message: Option<String>,
 }
 
-impl MergeItem {
-    fn new(name: &str, state: &str) -> MergeItem {
-        MergeItem {
+impl SyncItem {
+    fn new(name: &str, state: &str) -> SyncItem {
+        SyncItem {
             name: name.into(),
             from: None,
             to: None,
@@ -472,8 +527,8 @@ impl MergeItem {
 }
 
 #[derive(Debug, Serialize, Default)]
-pub struct MergeReport {
-    pub items: Vec<MergeItem>,
+pub struct SyncReport {
+    pub items: Vec<SyncItem>,
 }
 
 fn upstream_of(ws: &SourceRepo, name: &str) -> Result<Option<(SkillId, String)>> {
@@ -669,18 +724,19 @@ pub fn source_repo_lock(ctx: &Ctx, ws: &SourceRepo) -> Result<std::fs::File> {
     Ok(f)
 }
 
-pub struct MergeOptions<'a> {
+pub struct SyncOptions<'a> {
     pub only: Option<&'a str>,
-    /// Report what would be merged (fetches upstream; changes nothing).
+    /// Report what would come in (fetches upstream; changes nothing).
     pub dry_run: bool,
     pub cont: bool,
     pub abort: bool,
 }
 
-/// `tricks merge`: bring upstream changes into vendored skills, left uncommitted.
-pub fn merge(ctx: &Ctx, ws: &SourceRepo, o: &MergeOptions) -> Result<MergeReport> {
+/// `tricks sync`: merge upstream changes into vendored skills (your customizations are
+/// kept), left uncommitted for review.
+pub fn sync(ctx: &Ctx, ws: &SourceRepo, o: &SyncOptions) -> Result<SyncReport> {
     if o.dry_run {
-        return check_upstreams(ctx, ws, o.only);
+        return outdated(ctx, ws, o.only);
     }
     let _lock = source_repo_lock(ctx, ws)?;
     if o.cont || o.abort {
@@ -689,16 +745,16 @@ pub fn merge(ctx: &Ctx, ws: &SourceRepo, o: &MergeOptions) -> Result<MergeReport
             None => pending_merges(ctx, ws)?,
         };
         if names.is_empty() {
-            bail!("no upstream merge in progress");
+            bail!("no upstream sync in progress");
         }
-        let mut rep = MergeReport::default();
+        let mut rep = SyncReport::default();
         for n in names {
-            rep.items.push(if o.abort { abort_merge(ctx, ws, &n)? } else { continue_merge(ctx, ws, &n)? });
+            rep.items.push(if o.abort { abort_sync(ctx, ws, &n)? } else { continue_sync(ctx, ws, &n)? });
         }
         return Ok(rep);
     }
     if let Some(p) = pending_merges(ctx, ws)?.first() {
-        bail!("an upstream merge of `{p}` is in progress: resolve conflicts, then `tricks merge --continue` (or `--abort`)");
+        bail!("an upstream sync of `{p}` is in progress: resolve conflicts, then `tricks sync --continue` (or `--abort`)");
     }
     let names: Vec<String> = match o.only {
         Some(n) => {
@@ -713,9 +769,9 @@ pub fn merge(ctx: &Ctx, ws: &SourceRepo, o: &MergeOptions) -> Result<MergeReport
             .map(|(n, _)| n.clone())
             .collect(),
     };
-    let mut rep = MergeReport::default();
+    let mut rep = SyncReport::default();
     for n in names {
-        let item = merge_one(ctx, ws, &n).unwrap_or_else(|e| MergeItem { message: Some(format!("{e:#}")), ..MergeItem::new(&n, "error") });
+        let item = sync_one(ctx, ws, &n).unwrap_or_else(|e| SyncItem { message: Some(format!("{e:#}")), ..SyncItem::new(&n, "error") });
         let stop = item.state == "conflicts";
         rep.items.push(item);
         if stop {
@@ -725,9 +781,9 @@ pub fn merge(ctx: &Ctx, ws: &SourceRepo, o: &MergeOptions) -> Result<MergeReport
     Ok(rep)
 }
 
-/// What `merge` would bring in, per vendored skill (fetches; changes nothing).
-fn check_upstreams(ctx: &Ctx, ws: &SourceRepo, only: Option<&str>) -> Result<MergeReport> {
-    let mut rep = MergeReport::default();
+/// `tricks outdated`: what `sync` would bring in, per vendored skill (fetches; changes nothing).
+pub fn outdated(ctx: &Ctx, ws: &SourceRepo, only: Option<&str>) -> Result<SyncReport> {
+    let mut rep = SyncReport::default();
     for (name, s) in &ws.manifest.skills {
         if only.is_some_and(|o| o != name) || s.upstream.is_none() || (only.is_none() && s.update == Some(Policy::Paused)) {
             continue;
@@ -735,28 +791,28 @@ fn check_upstreams(ctx: &Ctx, ws: &SourceRepo, only: Option<&str>) -> Result<Mer
         let item = match sides(ctx, ws, name, Fetch::IfStale) {
             Ok(Some(sd)) => {
                 let changed = !sd.up_to_date();
-                MergeItem {
+                SyncItem {
                     from: Some(sd.base.clone()),
                     to: Some(sd.up_commit.clone()),
                     to_ref: Some(sd.up_label.clone()),
                     risk: if changed { RiskReport::scan_dir(&sd.up_dir).diff_from(&RiskReport::scan_dir(&sd.base_dir)) } else { vec![] },
                     incoming: if changed { sd.incoming } else { vec![] },
                     message: (s.update == Some(Policy::Pinned) && changed)
-                        .then(|| "pinned: merge it by name to take the update".to_string()),
-                    ..MergeItem::new(name, if changed { "update-available" } else { "up-to-date" })
+                        .then(|| "pinned: sync it by name to take the update".to_string()),
+                    ..SyncItem::new(name, if changed { "update-available" } else { "up-to-date" })
                 }
             }
             Ok(None) => continue,
-            Err(e) => MergeItem { message: Some(format!("{e:#}")), ..MergeItem::new(name, "error") },
+            Err(e) => SyncItem { message: Some(format!("{e:#}")), ..SyncItem::new(name, "error") },
         };
         rep.items.push(item);
     }
     Ok(rep)
 }
 
-fn merge_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<MergeItem> {
+fn sync_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
     let Some(sd) = sides(ctx, ws, name, Fetch::IfStale)? else {
-        return Ok(MergeItem { message: Some("local original (no upstream)".into()), ..MergeItem::new(name, "skipped") });
+        return Ok(SyncItem { message: Some("local original (no upstream)".into()), ..SyncItem::new(name, "skipped") });
     };
     let dir = ws.skill_dir(name)?;
     let rel = ws.skill(name)?.path.clone();
@@ -765,11 +821,11 @@ fn merge_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<MergeItem> {
         bail!("`{name}` has uncommitted changes; commit or stash them before merging upstream changes");
     }
     if sd.up_to_date() {
-        return Ok(MergeItem {
+        return Ok(SyncItem {
             from: Some(sd.base.clone()),
             to: Some(sd.up_commit.clone()),
             to_ref: Some(sd.up_label.clone()),
-            ..MergeItem::new(name, "up-to-date")
+            ..SyncItem::new(name, "up-to-date")
         });
     }
     let risk = RiskReport::scan_dir(&sd.up_dir).diff_from(&RiskReport::scan_dir(&sd.base_dir));
@@ -780,13 +836,13 @@ fn merge_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<MergeItem> {
     store::copy_dir(&dir, &backup)?;
     let labels = (format!("{name} (yours)"), format!("base {}", crate::id::short_commit(&sd.base)), format!("upstream {}", sd.up_label));
     let outcome = merge::three_way(&sd.base_dir, &dir, &sd.up_dir, (&labels.0, &labels.1, &labels.2))?;
-    let item = MergeItem {
+    let item = SyncItem {
         from: Some(sd.base.clone()),
         to: Some(sd.up_commit.clone()),
         to_ref: Some(sd.up_label.clone()),
         risk,
         incoming: sd.incoming.clone(),
-        ..MergeItem::new(name, "merged")
+        ..SyncItem::new(name, "merged")
     };
     if outcome.is_clean() {
         let mut lock = ws.lock.clone();
@@ -801,7 +857,7 @@ fn merge_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<MergeItem> {
         if let Some(r) = &sd.renamed {
             ctx.ui.info(&format!("upstream moved `{name}` to `{r}`; recorded in tricks.lock"));
         }
-        Ok(MergeItem {
+        Ok(SyncItem {
             outcome: Some(outcome),
             message: Some(
                 "merged into the working tree (uncommitted); review with `git diff` and commit — agents keep the previous version until then"
@@ -823,10 +879,10 @@ fn merge_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<MergeItem> {
                 now()
             ],
         )?;
-        Ok(MergeItem {
+        Ok(SyncItem {
             state: "conflicts".into(),
             outcome: Some(outcome),
-            message: Some("resolve the conflicts, then run `tricks merge --continue` (or `--abort`)".into()),
+            message: Some("resolve the conflicts, then run `tricks sync --continue` (or `--abort`)".into()),
             ..item
         })
     }
@@ -869,7 +925,7 @@ pub fn merge_state(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<Option<Merg
         .optional()?)
 }
 
-fn continue_merge(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<MergeItem> {
+fn continue_sync(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
     let st = merge_state(ctx, ws, name)?.with_context(|| format!("no merge in progress for `{name}`"))?;
     let dir = ws.skill_dir(name)?;
     let left = merge::unresolved(&dir, &st.conflicts);
@@ -887,15 +943,15 @@ fn continue_merge(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<MergeItem> {
     lock.save(&ws.root)?;
     ctx.state.conn.execute("DELETE FROM merges WHERE workspace=?1 AND skill=?2", params![ws.root.to_string_lossy(), name])?;
     let _ = store::remove_dir_force(Path::new(&st.backup));
-    Ok(MergeItem {
+    Ok(SyncItem {
         from,
         to: Some(st.target_commit),
-        message: Some("merge completed (uncommitted); review and commit".into()),
-        ..MergeItem::new(name, "continued")
+        message: Some("sync completed (uncommitted); review and commit".into()),
+        ..SyncItem::new(name, "continued")
     })
 }
 
-fn abort_merge(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<MergeItem> {
+fn abort_sync(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<SyncItem> {
     let st = merge_state(ctx, ws, name)?.with_context(|| format!("no merge in progress for `{name}`"))?;
     let dir = ws.skill_dir(name)?;
     let backup = PathBuf::from(&st.backup);
@@ -908,7 +964,7 @@ fn abort_merge(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<MergeItem> {
     ctx.state.conn.execute("DELETE FROM merges WHERE workspace=?1 AND skill=?2", params![ws.root.to_string_lossy(), name])?;
     ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [snapshot_key(ws, name)])?;
     redeploy(ctx, ws, name)?;
-    Ok(MergeItem { message: Some("restored your version".into()), ..MergeItem::new(name, "aborted") })
+    Ok(SyncItem { message: Some("restored your version".into()), ..SyncItem::new(name, "aborted") })
 }
 
 // ---------------------------------------------------------------- variants, edit, commit
@@ -1175,6 +1231,237 @@ pub fn edit_done(ctx: &Ctx, name: &str) -> Result<EditReport> {
     })
 }
 
+/// Agent environment detection for commit trailers (spec §12).
+pub fn detect_agent() -> Option<&'static str> {
+    if std::env::var_os("CLAUDECODE").is_some() || std::env::var_os("CLAUDE_CODE_ENTRYPOINT").is_some() {
+        return Some("claude-code");
+    }
+    if std::env::var_os("CODEX_SANDBOX").is_some()
+        || std::env::var_os("CODEX_HOME").is_some() && std::env::var_os("CODEX_SESSION_ID").is_some()
+    {
+        return Some("codex");
+    }
+    if std::env::var_os("CURSOR_AGENT").is_some() || std::env::var_os("CURSOR_TRACE_ID").is_some() {
+        return Some("cursor");
+    }
+    if std::env::var_os("COPILOT_AGENT").is_some() || std::env::var_os("GITHUB_COPILOT_AGENT").is_some() {
+        return Some("copilot");
+    }
+    None
+}
+
+/// `git commit` arguments with a `Tricks-Agent:` trailer when an agent is detected.
+fn commit_args<'a>(message: &'a str, trailer: &'a Option<String>) -> Vec<&'a str> {
+    let mut args = vec!["commit", "-q", "-m", message];
+    if let Some(t) = trailer {
+        args.push("--trailer");
+        args.push(t);
+    }
+    args
+}
+
+fn agent_trailer() -> Option<String> {
+    detect_agent().map(|a| format!("Tricks-Agent: {a}"))
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommitReport {
+    pub name: String,
+    pub branch: String,
+    pub commit: Option<String>,
+    pub agent: Option<String>,
+}
+
+/// `tricks edit <skill> --commit -m`: commit the draft on the branch being edited.
+/// Refused on the main checkout, so agents (pre-approved for `edit`) only ever commit to
+/// experiment branches.
+pub fn commit_draft(ctx: &Ctx, name: &str, message: &str) -> Result<CommitReport> {
+    let ws = require(ctx)?;
+    let rel = ws.skill(name)?.path.clone();
+    let branch = ctx.state.meta_get(&editing_key(&ws, name))?.filter(|b| !b.is_empty()).with_context(|| {
+        format!("`{name}` is not being edited on a branch; `--commit` only commits drafts on branches (start one with `tricks edit {name} -b <branch>`), so commit on your main branch with git")
+    })?;
+    let dir = worktree_path(ctx, &ws, &branch);
+    git(&dir, &["add", "-A", "--", &rel])?;
+    let staged = !git::git_ok(&dir, &["diff", "--cached", "--quiet", "--", &rel]);
+    let trailer = agent_trailer();
+    let commit = if staged {
+        let mut args = commit_args(message, &trailer);
+        args.extend(["--", rel.as_str()]);
+        git(&dir, &args)?;
+        Some(git(&dir, &["rev-parse", "HEAD"])?)
+    } else {
+        ctx.ui.info(&format!("no changes to {rel} on {branch}"));
+        None
+    };
+    Ok(CommitReport { name: name.into(), branch, commit, agent: detect_agent().map(String::from) })
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MergeOptions<'a> {
+    /// Merge the entire branch, not only the skill's folder.
+    pub whole_branch: bool,
+    /// Open a pull request on the source repo's remote instead of merging locally.
+    pub pr: bool,
+    pub message: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct MergeReport {
+    pub name: String,
+    pub branch: String,
+    /// The branch merged into (the source repo's current branch).
+    pub into: String,
+    /// skill (only the skill's folder, one commit) | branch (the whole branch)
+    pub mode: String,
+    pub commit: Option<String>,
+    pub pr_url: Option<String>,
+    /// Files left with conflicts to resolve.
+    pub conflicts: Vec<String>,
+    /// Files outside the skill that the branch also changes (not merged in skill mode).
+    pub other_paths: Vec<String>,
+    pub placements: Vec<String>,
+}
+
+/// `tricks merge <skill>@<branch>`: bring an experiment branch back. By default only the
+/// skill's folder, as one commit; `--whole-branch` merges the entire branch; `--pr` opens
+/// a pull request on the source repo's remote instead.
+pub fn merge_branch(ctx: &Ctx, input: &str, o: &MergeOptions) -> Result<MergeReport> {
+    let ws = require(ctx)?;
+    let (name, branch) = input.split_once('@').with_context(|| format!("use `tricks merge {input}@<branch>`"))?;
+    let rel = ws.skill(name)?.path.clone();
+    if !git::git_ok(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]) {
+        bail!("no branch `{branch}` in the source repo");
+    }
+    let into = git::current_branch(&ws.root).context("the source repo is not on a branch (detached HEAD)")?;
+    if into == branch {
+        bail!("`{branch}` is the current branch");
+    }
+    if ctx.state.meta_get(&editing_key(&ws, name))?.as_deref() == Some(branch) {
+        let wt = worktree_path(ctx, &ws, branch);
+        if git(&wt, &["status", "--porcelain", "--", &rel]).map(|o| !o.trim().is_empty()).unwrap_or(false) {
+            bail!("the draft of `{name}` on {branch} has uncommitted changes; commit them first (`tricks edit {name} --commit -m \"…\"`)");
+        }
+    }
+    let _lock = source_repo_lock(ctx, &ws)?;
+    let base = git(&ws.root, &["merge-base", "HEAD", branch])?;
+    let changed: Vec<String> = git(&ws.root, &["diff", "--name-only", &base, branch])?.lines().map(String::from).collect();
+    let prefix = format!("{}/", rel.trim_end_matches('/'));
+    let (in_skill, other): (Vec<String>, Vec<String>) = changed.into_iter().partition(|f| f.starts_with(&prefix));
+    let mode = if o.whole_branch { "branch" } else { "skill" };
+    let message = o
+        .message
+        .map(String::from)
+        .unwrap_or_else(|| if o.whole_branch { format!("Merge branch '{branch}'") } else { format!("Merge {branch} into {name}") });
+    let mut rep = MergeReport {
+        name: name.into(),
+        branch: branch.into(),
+        into: into.clone(),
+        mode: mode.into(),
+        other_paths: if o.whole_branch { vec![] } else { other.clone() },
+        ..Default::default()
+    };
+    if !o.whole_branch && in_skill.is_empty() {
+        bail!("{branch} has no changes to `{name}` since it branched from {into}");
+    }
+    let patch = if o.whole_branch { Vec::new() } else { git::git_raw(&ws.root, &["diff", "--binary", &base, branch, "--", &rel])? };
+    let trailer = agent_trailer();
+
+    if o.pr {
+        let head = if o.whole_branch {
+            branch.to_string()
+        } else {
+            // A branch with only the skill's changes, built off the current branch.
+            let head = format!("tricks/merge-{name}-{}", branch.replace('/', "-"));
+            let wt = ctx.paths.work().join(ws.key()).join(format!("merge--{}", head.replace('/', "--")));
+            if wt.exists() {
+                let _ = git(&ws.root, &["worktree", "remove", "--force", &wt.to_string_lossy()]);
+            }
+            git(&ws.root, &["worktree", "add", "-q", "-B", &head, &wt.to_string_lossy(), "HEAD"])?;
+            let applied = git::git_with_input(&wt, &["apply", "--3way", "--whitespace=nowarn"], &patch)
+                .and_then(|_| git(&wt, &commit_args(&message, &trailer)));
+            let _ = git(&ws.root, &["worktree", "remove", "--force", &wt.to_string_lossy()]);
+            if let Err(e) = applied {
+                let _ = git(&ws.root, &["branch", "-D", &head]);
+                bail!(
+                    "the changes to `{name}` on {branch} do not apply cleanly onto {into} ({e:#}); merge locally to resolve the conflicts"
+                );
+            }
+            head
+        };
+        git(&ws.root, &["push", "-q", "-u", "origin", &head]).context("pushing to the source repo's `origin` remote")?;
+        let body = if o.whole_branch {
+            format!("Merges the `{branch}` experiment (opened by New Tricks).")
+        } else {
+            format!("Merges the changes to `{name}` from the `{branch}` experiment (opened by New Tricks).")
+        };
+        let out = std::process::Command::new("gh")
+            .args(["pr", "create", "--base", &into, "--head", &head, "--title", &message, "--body", &body])
+            .current_dir(&ws.root)
+            .output()
+            .context("running gh pr create")?;
+        if !out.status.success() {
+            bail!("gh pr create failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        rep.pr_url = Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
+        return Ok(rep);
+    }
+
+    if o.whole_branch {
+        if !git(&ws.root, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
+            bail!("the source repo has uncommitted changes; commit or stash them before merging a whole branch");
+        }
+        // `git merge` takes no trailers: merge without committing, then commit.
+        if let Err(e) = git(&ws.root, &["merge", "--no-ff", "--no-commit", "-q", branch]) {
+            rep.conflicts = unmerged(&ws.root);
+            if rep.conflicts.is_empty() {
+                let _ = git(&ws.root, &["merge", "--abort"]);
+                return Err(e);
+            }
+            return Ok(rep);
+        }
+        git(&ws.root, &commit_args(&message, &trailer))?;
+    } else {
+        if !git(&ws.root, &["status", "--porcelain", "--", &rel])?.trim().is_empty() {
+            bail!("`{name}` has uncommitted changes on {into}; commit or stash them before merging");
+        }
+        if git::git_with_input(&ws.root, &["apply", "--3way", "--whitespace=nowarn"], &patch).is_err() {
+            rep.conflicts = unmerged(&ws.root);
+            if rep.conflicts.is_empty() {
+                bail!("the changes to `{name}` on {branch} could not be applied onto {into}");
+            }
+            return Ok(rep);
+        }
+        if git::git_ok(&ws.root, &["diff", "--cached", "--quiet", "--", &rel]) {
+            bail!("the changes to `{name}` on {branch} are already in {into}");
+        }
+        let mut args = commit_args(&message, &trailer);
+        args.extend(["--", rel.as_str()]);
+        git(&ws.root, &args)?;
+    }
+    rep.commit = Some(git::head_commit(&ws.root)?);
+    // The experiment is in: stop editing it and stop deploying the branch as a variant.
+    if ctx.state.meta_get(&editing_key(&ws, name))?.as_deref() == Some(branch) {
+        ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [editing_key(&ws, name)])?;
+    }
+    if ws.skill(name)?.use_branch.as_deref() == Some(branch) {
+        ws.set_skill_field(name, "use", None)?;
+    }
+    let wf = ws.root.join(config::WORK_FILE);
+    if WorkFile::load(&ws.root)?.use_branch.get(name).map(String::as_str) == Some(branch) {
+        let mut doc = config::load_doc(&wf)?;
+        config::table_mut(&mut doc, &["use"]).remove(name);
+        config::save_doc(&wf, &doc)?;
+    }
+    let ws = SourceRepo::open(&ws.root)?;
+    rep.placements = redeploy(ctx, &ws, name)?;
+    Ok(rep)
+}
+
+fn unmerged(root: &Path) -> Vec<String> {
+    git(root, &["diff", "--name-only", "--diff-filter=U"]).map(|o| o.lines().map(String::from).collect()).unwrap_or_default()
+}
+
 #[derive(Debug, Serialize)]
 pub struct UseReport {
     pub name: String,
@@ -1357,8 +1644,24 @@ pub fn version_file(ctx: &Ctx, ws: &SourceRepo, name: &str, which: &str, rel: &s
             let dir = candidate_dir(ctx, ws, name)?;
             Ok(std::fs::read(dir.path().join(rel)).ok())
         }
-        other => bail!("unknown version `{other}` (base | upstream | working | head | candidate)"),
+        rev => {
+            // A branch, tag or commit of the source repo.
+            if !git::git_ok(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")]) {
+                bail!("unknown version `{rev}` (a branch or commit of the source repo, or working | head | base)");
+            }
+            let p = format!("{}/{rel}", ws.skill(name)?.path);
+            Ok(git::git_raw(&ws.root, &["show", &format!("{rev}:{p}")]).ok())
+        }
     }
+}
+
+/// Files of a source repo skill at a git revision.
+fn files_at(ws: &SourceRepo, name: &str, rev: &str) -> BTreeSet<String> {
+    let Ok(s) = ws.skill(name) else { return BTreeSet::new() };
+    let prefix = format!("{}/", s.path.trim_end_matches('/'));
+    git(&ws.root, &["ls-tree", "-r", "--name-only", rev, "--", &s.path])
+        .map(|o| o.lines().filter_map(|l| l.strip_prefix(&prefix)).map(String::from).collect())
+        .unwrap_or_default()
 }
 
 /// Merge B → U into a scratch copy of C (the working tree is never touched).
@@ -1380,6 +1683,11 @@ pub fn changed_files(ctx: &Ctx, ws: &SourceRepo, name: &str, from: &str, to: &st
     if let Some(sd) = &sd {
         paths.extend(dir_files(&sd.base_dir));
         paths.extend(dir_files(&sd.up_dir));
+    }
+    for rev in [from, to] {
+        if !matches!(rev, "working" | "C" | "base" | "B" | "upstream" | "U" | "candidate" | "R") {
+            paths.extend(files_at(ws, name, if rev == "head" { "HEAD" } else { rev }));
+        }
     }
     // Compute a candidate once rather than per file.
     let cand = if from == "candidate" || to == "candidate" { Some(candidate_dir(ctx, ws, name)?) } else { None };

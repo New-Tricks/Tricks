@@ -71,14 +71,18 @@ pub enum CatalogCmd {
     /// Add a repository, marketplace, well-known site or apm.yml/skills-lock.json
     Add {
         /// owner/repo, URL, path to apm.yml / skills-lock.json, or a site with /.well-known/agent-skills
-        input: String,
+        #[arg(required_unless_present = "recommended")]
+        input: Option<String>,
         /// repo | marketplace | wellknown | pointers (detected when omitted)
         #[arg(long)]
         kind: Option<String>,
+        /// Add the recommended catalogs that are missing from your config
+        #[arg(long, conflicts_with_all = ["input", "kind"])]
+        recommended: bool,
     },
     /// List catalogs
     List,
-    /// Remove (or disable a default) catalog
+    /// Remove a catalog
     Remove {
         /// Catalog as shown by `tricks catalog list`
         input: String,
@@ -90,25 +94,70 @@ pub enum CatalogCmd {
     },
 }
 
+/// Where `link` and `try` put skills.
+#[derive(Args, Debug, Default, Clone)]
+pub struct LinkArgs {
+    /// Into this project
+    #[arg(long)]
+    pub to: Option<String>,
+    /// Into the user-level agent directories
+    #[arg(long)]
+    pub global: bool,
+    /// Agents to link for (default: the source repo's, else the user setting)
+    #[arg(long, value_delimiter = ',')]
+    pub agents: Vec<String>,
+    /// Copy instead of symlinking
+    #[arg(long)]
+    pub copy: bool,
+    /// Temporarily replace an existing skill of the same name (restored on unlink)
+    #[arg(long)]
+    pub shadow: bool,
+}
+
+impl LinkArgs {
+    fn options(&self) -> crate::links::LinkOptions<'_> {
+        crate::links::LinkOptions {
+            to: self.to.as_deref(),
+            global: self.global,
+            agents: &self.agents,
+            copy: self.copy,
+            shadow: self.shadow,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub enum Cmd {
     // ------------------------------------------------------------ discover
     /// Search skills across all catalogs
     Search(SearchArgs),
-    /// Show a skill: metadata, files, licence, risk, catalog signals, body
-    #[command(visible_alias = "info")]
-    Show {
+    /// Catalog details and frontmatter of a skill: licence, risk, signals, files
+    Info {
         /// Skill id, URL, or name
         skill: String,
-        /// Print one supporting file instead
-        #[arg(long)]
+    },
+    /// Show a skill's content (Markdown is rendered in a terminal)
+    View {
+        /// Skill id, URL, or name
+        skill: String,
+        /// A supporting file instead of SKILL.md
         file: Option<String>,
+        /// Print the file as is
+        #[arg(long)]
+        raw: bool,
     },
     /// Manage the catalogs search draws on
     #[command(subcommand)]
     Catalog(CatalogCmd),
+    /// Try a skill that is not in your source repo: link it into this project (or --global)
+    Try {
+        /// Upstream skill (owner/repo//skill, URL, ClawHub or .well-known id) or a local folder
+        skill: String,
+        #[command(flatten)]
+        link: LinkArgs,
+    },
 
-    // ------------------------------------------------------------ start
+    // ------------------------------------------------------------ skills in the repo
     /// Make the current git repository a source repo
     Init {
         /// Source repo name (default: the directory name)
@@ -118,17 +167,20 @@ pub enum Cmd {
         #[arg(long)]
         agent_skill: bool,
     },
-    /// Scaffold a new skill in the source repo
-    New {
+    /// Create a skill: scaffold it, or take it from an existing folder
+    Create {
         /// Skill name (lowercase letters, digits and hyphens)
         name: String,
-        /// Frontmatter description
+        /// Frontmatter description (for a scaffolded skill)
         #[arg(long)]
         description: Option<String>,
+        /// Take the skill from this folder instead of scaffolding it
+        #[arg(long)]
+        from: Option<String>,
     },
-    /// Bring a skill into the source repo to customize it: an upstream skill or a local folder
+    /// Vendor an upstream skill into the source repo to customize it
     Vendor {
-        /// Upstream skill (owner/repo//skill, URL, ClawHub or .well-known id) or a local folder
+        /// Upstream skill: owner/repo//skill, URL, ClawHub or .well-known id
         skill: String,
         /// Name in the source repo (default: the skill's name)
         #[arg(long)]
@@ -136,23 +188,40 @@ pub enum Cmd {
         /// Path in the source repo (default: skills/<name>)
         #[arg(long)]
         path: Option<String>,
-        /// For a local folder: the upstream skill it was copied from
-        #[arg(long)]
-        upstream: Option<String>,
-        /// For a local folder: the upstream commit the copy started from (with --upstream)
-        #[arg(long)]
+        /// Take the files from a copy of the upstream skill you made earlier (with --base)
+        #[arg(long, requires = "base")]
+        from: Option<String>,
+        /// The upstream revision that copy started from (commit, tag or catalog version)
+        #[arg(long, requires = "from")]
         base: Option<String>,
     },
+    /// Remove a skill from the source repo (and its links)
+    Remove {
+        /// Source repo skill
+        skill: String,
+    },
+    /// Source repo skills and their state (outside a repo: registered source repos)
+    List {
+        /// Show links and trials instead
+        #[arg(long)]
+        links: bool,
+    },
 
-    // ------------------------------------------------------------ work
+    // ------------------------------------------------------------ work on skills
     /// Edit a skill (optionally on a branch); its links follow the edits live
     Edit {
         /// Source repo skill (an upstream skill is vendored first)
         skill: String,
         /// Edit on this branch, in its own worktree (created if needed)
-        #[arg(long, short = 'b', conflicts_with = "done")]
+        #[arg(long, short = 'b', conflicts_with_all = ["commit", "done"])]
         branch: Option<String>,
-        /// Stop editing: links return to the skill's active variant (commit with git)
+        /// Commit the draft on the branch being edited (never on the main checkout)
+        #[arg(long, requires = "message")]
+        commit: bool,
+        /// Commit message (with --commit)
+        #[arg(long, short = 'm', requires = "commit")]
+        message: Option<String>,
+        /// Stop editing: links return to the skill's active variant
         #[arg(long)]
         done: bool,
     },
@@ -168,57 +237,78 @@ pub enum Cmd {
         #[arg(long)]
         reset: bool,
     },
-    /// Merge upstream changes into vendored skills (left uncommitted for review)
-    Merge {
-        /// Only this skill (also merges a pinned skill)
-        skill: Option<String>,
-        /// Show what would be merged, with a risk summary; change nothing
-        #[arg(long, conflicts_with_all = ["cont", "abort"])]
-        dry_run: bool,
-        /// Finish a merge after resolving its conflicts
-        #[arg(long = "continue", conflicts_with = "abort")]
-        cont: bool,
-        /// Abandon a merge and restore your version
-        #[arg(long)]
-        abort: bool,
-    },
-    /// Show changes between versions of a source repo skill
+    /// Compare versions of a skill in the source repo: branches, head, working, base
     Diff {
         /// Source repo skill
         skill: String,
-        /// base | upstream | head | working | candidate (the merge result, not yet applied)
-        #[arg(long, default_value = "base")]
-        from: String,
-        /// Same choices as --from
-        #[arg(long, default_value = "working")]
-        to: String,
+        /// <from>..<to>: branch or commit names, `head`, `working`, or `base` (the upstream
+        /// revision last synced). Default: head..working
+        #[arg(value_name = "RANGE")]
+        range: Option<String>,
     },
-    /// Source repo skills, variants, upstream changes and active links
-    #[command(visible_alias = "ls")]
-    Status,
+    /// Merge an experiment branch back: only the skill's folder, as one commit
+    Merge {
+        /// <skill>@<branch>
+        #[arg(value_name = "SKILL@BRANCH")]
+        spec: String,
+        /// Merge the whole branch, not only the skill's folder
+        #[arg(long)]
+        whole_branch: bool,
+        /// Open a pull request on the source repo's remote instead of merging locally
+        #[arg(long)]
+        pr: bool,
+        /// Commit (or pull request) message
+        #[arg(long, short = 'm')]
+        message: Option<String>,
+    },
+
+    // ------------------------------------------------------------ upstream
+    /// Upstream changes to vendored skills, with a risk summary (fetches; changes nothing)
+    Outdated {
+        /// Only this skill
+        skill: Option<String>,
+        /// Show the incoming changes (base → upstream)
+        #[arg(long)]
+        diff: bool,
+    },
+    /// Merge upstream changes into vendored skills, keeping yours (left uncommitted)
+    Sync {
+        /// Only this skill (also syncs a pinned skill)
+        skill: Option<String>,
+        /// Show what the result would be; change nothing
+        #[arg(long, conflicts_with_all = ["cont", "abort"])]
+        dry_run: bool,
+        /// Finish after resolving conflicts
+        #[arg(long = "continue", conflicts_with = "abort")]
+        cont: bool,
+        /// Abandon and restore your version
+        #[arg(long)]
+        abort: bool,
+    },
+    /// Offer your change to a vendored skill back upstream as a pull request
+    Contribute {
+        /// Vendored skill
+        skill: String,
+        /// Pull request title
+        #[arg(long)]
+        title: Option<String>,
+        /// Pull request body
+        #[arg(long)]
+        body: Option<String>,
+        /// Prepare the branch locally; do not fork, push or open the pull request
+        #[arg(long)]
+        dry_run: bool,
+    },
 
     // ------------------------------------------------------------ validate
-    /// Link skills into agent directories to test them (all source repo skills when none is named)
+    /// Link source repo skills into agent directories to test them (all when none is named)
     Link {
-        /// Source repo skill (or skill@branch), local folder, or an upstream skill to try without vendoring
+        /// Source repo skill, or <skill>@<branch> (default: every skill, into the user-level directories)
         skill: Option<String>,
-        /// Link into this project (default for upstream skills: the current directory)
-        #[arg(long)]
-        to: Option<String>,
-        /// Link into the user-level agent directories (default for source repo skills)
-        #[arg(long)]
-        global: bool,
-        /// Agents to link for (default: the source repo's, else the user setting)
-        #[arg(long, value_delimiter = ',')]
-        agents: Vec<String>,
-        /// Copy instead of symlinking
-        #[arg(long)]
-        copy: bool,
-        /// Temporarily replace an existing skill of the same name (restored on unlink)
-        #[arg(long)]
-        shadow: bool,
+        #[command(flatten)]
+        link: LinkArgs,
     },
-    /// Remove links (all of the source repo's when none is named)
+    /// Remove links and trials (all of the source repo's when none is named)
     Unlink {
         /// Skill to unlink
         skill: Option<String>,
@@ -228,12 +318,9 @@ pub enum Cmd {
         /// Only links in the user-level agent directories
         #[arg(long)]
         global: bool,
-        /// Every link, everywhere
+        /// Every link and trial, everywhere
         #[arg(long)]
         all: bool,
-        /// Remove skills installed at user scope by New Tricks 0.2 and earlier
-        #[arg(long)]
-        legacy: bool,
     },
     /// Lint source repo skills (or a skill directory)
     Lint {
@@ -268,20 +355,6 @@ pub enum Cmd {
         #[arg(long)]
         accept_copyleft: bool,
     },
-    /// Offer your change to a vendored skill back upstream as a pull request
-    Contribute {
-        /// Vendored skill
-        skill: String,
-        /// Pull request title
-        #[arg(long)]
-        title: Option<String>,
-        /// Pull request body
-        #[arg(long)]
-        body: Option<String>,
-        /// Prepare the branch locally; do not fork, push or open the pull request
-        #[arg(long)]
-        dry_run: bool,
-    },
 
     // ------------------------------------------------------------ maintain
     /// Check environment, credentials, agents and state
@@ -304,7 +377,7 @@ pub enum Cmd {
     /// One-line status for agent status lines (cached state only, never the network)
     #[command(hide = true)]
     Statusline,
-    /// Prune store entries no link or merge needs (runs automatically after unlink)
+    /// Prune store entries no link or sync needs (runs automatically after unlink)
     #[command(hide = true)]
     Gc {
         /// Show what would be removed
@@ -315,11 +388,12 @@ pub enum Cmd {
 
 /// Top-level help, grouped by what you are doing.
 const GROUPS: &[(&str, &[&str])] = &[
-    ("Discover", &["search", "show", "catalog"]),
-    ("Start (in a source repo)", &["init", "new", "vendor"]),
-    ("Work on skills", &["edit", "use", "merge", "diff", "status"]),
+    ("Discover", &["search", "info", "view", "catalog", "try"]),
+    ("Skills in the source repo", &["init", "create", "vendor", "remove", "list"]),
+    ("Work on skills", &["edit", "use", "diff", "merge"]),
+    ("Upstream", &["outdated", "sync", "contribute"]),
     ("Validate", &["link", "unlink", "lint"]),
-    ("Ship", &["publish", "contribute"]),
+    ("Ship", &["publish"]),
     ("Maintain", &["doctor", "self-update"]),
 ];
 
@@ -383,42 +457,22 @@ fn run(cli: Cli) -> Result<()> {
             let res = do_search(&ctx, &a)?;
             emit(json, &res, print_search);
         }
-        Cmd::Show { skill, file } => match file {
-            Some(f) => {
-                let (_, bytes) = crate::inspect::read_file(&ctx, &skill, &f)?;
-                if json {
-                    println!("{}", serde_json::json!({ "path": f, "content": String::from_utf8_lossy(&bytes) }));
-                } else {
-                    print!("{}", String::from_utf8_lossy(&bytes));
-                }
-            }
-            None => {
-                let r = crate::inspect::show(&ctx, &skill)?;
-                emit(json, &r, print_show);
-            }
-        },
+        Cmd::Info { skill } => {
+            let r = crate::inspect::info(&ctx, &skill)?;
+            emit(json, &r, print_info);
+        }
+        Cmd::View { skill, file, raw } => view(&ctx, &skill, file.as_deref(), raw)?,
         Cmd::Catalog(sc) => run_catalog(&ctx, sc)?,
-        Cmd::Status => {
-            let r = crate::cli_repo::status(&ctx)?;
-            emit(json, &r, crate::cli_repo::print_status);
+        Cmd::Try { skill, link } => {
+            let r = crate::links::try_skill(&ctx, &skill, &link.options())?;
+            emit(json, &r, print_links);
         }
-        Cmd::Link { skill, to, global, agents, copy, shadow } => {
-            let o = crate::links::LinkOptions { to: to.as_deref(), global, agents: &agents, copy, shadow };
-            let r = crate::links::link(&ctx, skill.as_deref(), &o)?;
-            emit(json, &r, |r| {
-                for l in &r.links {
-                    println!("linked {}{} into {}", l.name, if l.trial { " (trial)" } else { "" }, l.scope);
-                    for (a, p, m) in &l.placements {
-                        println!("  {a:<8} {p} ({m})");
-                    }
-                }
-                for (n, e) in &r.errors {
-                    println!("failed {n}: {e}");
-                }
-            });
+        Cmd::Link { skill, link } => {
+            let r = crate::links::link(&ctx, skill.as_deref(), &link.options())?;
+            emit(json, &r, print_links);
         }
-        Cmd::Unlink { skill, to, global, all, legacy } => {
-            let o = crate::links::UnlinkOptions { to: to.as_deref(), global, all, legacy };
+        Cmd::Unlink { skill, to, global, all } => {
+            let o = crate::links::UnlinkOptions { to: to.as_deref(), global, all };
             let r = crate::links::unlink(&ctx, skill.as_deref(), &o)?;
             emit(json, &r, |r| {
                 for p in &r.removed {
@@ -428,6 +482,10 @@ fn run(cli: Cli) -> Result<()> {
                     println!("nothing to unlink");
                 }
             });
+        }
+        Cmd::List { links } => {
+            let r = crate::cli_repo::list(&ctx)?;
+            emit(json, &r, |r| crate::cli_repo::print_list(r, links));
         }
         Cmd::Statusline => {
             let line = crate::statusline::line(&ctx)?;
@@ -457,10 +515,66 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+fn print_links(r: &crate::links::LinkReport) {
+    for l in &r.links {
+        let into = if l.scope == "global" { "the user-level agent directories".to_string() } else { l.scope.clone() };
+        println!("{} {} into {into}", if l.trial { "trying" } else { "linked" }, l.name);
+        for (a, p, m) in &l.placements {
+            println!("  {a:<8} {p} ({m})");
+        }
+    }
+    for (n, e) in &r.errors {
+        println!("failed {n}: {e}");
+    }
+}
+
+/// `tricks view`: Markdown is rendered for a terminal, printed as is otherwise.
+fn view(ctx: &Ctx, skill: &str, file: Option<&str>, raw: bool) -> Result<()> {
+    let path = file.unwrap_or("SKILL.md");
+    let (canonical, bytes) = crate::inspect::read_file(ctx, skill, path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    if ctx.opts.json {
+        println!("{}", serde_json::json!({ "skill": canonical, "path": path, "content": text }));
+        return Ok(());
+    }
+    use std::io::IsTerminal;
+    let markdown = path.ends_with(".md") || path.ends_with(".markdown");
+    if raw || !markdown || !std::io::stdout().is_terminal() {
+        print!("{text}");
+        return Ok(());
+    }
+    let skin = termimad::MadSkin::default();
+    if path == "SKILL.md" {
+        let doc = crate::skill::SkillDoc::parse(&text);
+        println!("{}  {canonical}", doc.name.as_deref().unwrap_or(skill));
+        if let Some(d) = &doc.description {
+            skin.print_text(&format!("*{}*", d.trim()));
+        }
+        println!();
+        skin.print_text(&doc.body);
+    } else {
+        skin.print_text(&text);
+    }
+    Ok(())
+}
+
 fn run_catalog(ctx: &Ctx, sc: CatalogCmd) -> Result<()> {
     let json = ctx.opts.json;
     match sc {
-        CatalogCmd::Add { input, kind } => {
+        CatalogCmd::Add { recommended: true, .. } => {
+            let added = crate::catalogs::add_recommended(ctx)?;
+            let rep = crate::catalogs::refresh(ctx, false, None)?;
+            emit(json, &serde_json::json!({ "added": added, "indexed": rep.indexed, "errors": rep.errors }), |_| {
+                if added.is_empty() {
+                    println!("all recommended catalogs are already in your config");
+                }
+                for a in &added {
+                    println!("added {a}");
+                }
+            });
+        }
+        CatalogCmd::Add { input, kind, .. } => {
+            let input = input.unwrap_or_default();
             let (key, k) = crate::catalogs::add(ctx, &input, kind.as_deref())?;
             let rep = crate::catalogs::refresh(ctx, true, Some(&key))?;
             emit(json, &serde_json::json!({ "catalog": key, "kind": k, "indexed": rep.indexed, "errors": rep.errors }), |_| {
@@ -473,17 +587,12 @@ fn run_catalog(ctx: &Ctx, sc: CatalogCmd) -> Result<()> {
         CatalogCmd::List => {
             let l = crate::catalogs::list(ctx)?;
             emit(json, &l, |l| {
+                if l.is_empty() {
+                    println!("no catalogs; add one with `tricks catalog add`, or `tricks catalog add --recommended`");
+                }
                 for s in l {
                     let when = s.last_indexed.map(ago).unwrap_or_else(|| "never".into());
-                    println!(
-                        "{:<60} {:<12} {:>5} skills  indexed {}{}{}",
-                        s.key,
-                        s.kind.as_str(),
-                        s.skills,
-                        when,
-                        if s.default { "  (default)" } else { "" },
-                        if s.disabled { "  [disabled]" } else { "" }
-                    );
+                    println!("{:<60} {:<12} {:>5} skills  indexed {}", s.key, s.kind.as_str(), s.skills, when);
                 }
                 let live = crate::user::config(ctx).map(|m| m.settings.live).unwrap_or_default();
                 let gh = if ctx.gh.token("github.com").is_some() { "" } else { " (GitHub code search needs `gh auth login`)" };
@@ -597,7 +706,7 @@ pub fn human_n(n: i64) -> String {
     }
 }
 
-fn print_show(r: &crate::inspect::ShowReport) {
+fn print_info(r: &crate::inspect::InfoReport) {
     println!("{}  {}", r.name, r.canonical);
     if let Some(d) = &r.description {
         println!("  {d}");
@@ -636,8 +745,7 @@ fn print_show(r: &crate::inspect::ShowReport) {
             .unwrap_or_default();
         println!("  {catalog:<8} {}", parts.join(" "));
     }
-    let state: Vec<&str> =
-        [(r.vendored, "vendored"), (r.linked, "linked for a trial")].iter().filter(|(on, _)| *on).map(|(_, s)| *s).collect();
+    let state: Vec<&str> = [(r.vendored, "vendored"), (r.linked, "being tried")].iter().filter(|(on, _)| *on).map(|(_, s)| *s).collect();
     if !state.is_empty() {
         println!("  state    {}", state.join(", "));
     }
@@ -645,10 +753,17 @@ fn print_show(r: &crate::inspect::ShowReport) {
     for f in &r.files {
         println!("    {:<50} {:>7}{}", f.path, f.size, if f.script { "  script" } else { "" });
     }
-    if let Some(e) = &r.frontmatter_error {
-        println!("  frontmatter error: {e}");
+    match (&r.frontmatter, &r.frontmatter_error) {
+        (_, Some(e)) => println!("  frontmatter error: {e}"),
+        (Some(fm), None) => {
+            println!("  frontmatter:");
+            for l in fm.trim_end().lines() {
+                println!("    {l}");
+            }
+        }
+        _ => {}
     }
-    println!("\n{}", r.body.trim_end());
+    println!("  content  `tricks view {}`", r.canonical);
 }
 
 #[cfg(test)]

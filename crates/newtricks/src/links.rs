@@ -1,5 +1,6 @@
-//! Links (spec §8): deploy source repo skills — and upstream skills under trial — into a
-//! project or the user-level agent directories to test them with real agents.
+//! Links (spec §8): `link` deploys source repo skills and `try` deploys anything else
+//! (upstream skills, local folders) into a project or the user-level agent directories,
+//! to test them with real agents.
 
 use crate::agents::{self, Agent};
 use crate::ctx::Ctx;
@@ -80,24 +81,35 @@ fn agents_for(ctx: &Ctx, names: &[String]) -> Result<Vec<&'static Agent>> {
     }
 }
 
-/// Resolve `input` into something linkable: a local skill directory (dev mode), a
-/// source repo skill (dev mode, active variant, or `name@branch`), or an upstream skill
-/// (a trial, from the store).
-pub fn link_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
+/// A skill of the current source repo: a name, `name@branch`, or a directory inside it.
+fn repo_target(ctx: &Ctx, input: &str) -> Result<Option<LinkTarget>> {
+    if let Some(t) = crate::source_repo::link_target_for_name(ctx, input)? {
+        return Ok(Some(t));
+    }
+    if let Some(dir) = local_dir(ctx, input)
+        && let Some(key) = crate::source_repo::skill_key_for_dir(&dir)
+    {
+        let name = key.rsplit_once("//").map(|(_, n)| n.to_string()).unwrap_or_default();
+        return crate::source_repo::link_target_for_name(ctx, &name);
+    }
+    Ok(None)
+}
+
+fn local_dir(ctx: &Ctx, input: &str) -> Option<PathBuf> {
     let p = Path::new(input);
     let local = if p.is_absolute() { p.to_path_buf() } else { ctx.opts.cwd.join(p) };
-    if local.join("SKILL.md").is_file()
-        && (input.starts_with('.') || input.starts_with('/') || input.contains(std::path::MAIN_SEPARATOR) || !input.contains("//"))
-    {
-        let dir = crate::paths::canon(&local)?;
+    let pathlike = input.starts_with('.') || input.starts_with('/') || input.contains(std::path::MAIN_SEPARATOR) || !input.contains("//");
+    (pathlike && local.join("SKILL.md").is_file()).then(|| crate::paths::canon(&local).ok()).flatten()
+}
+
+/// Something to try that is not in the source repo: a local skill folder (dev mode) or
+/// an upstream skill (an exact revision in the store).
+fn trial_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
+    if let Some(dir) = local_dir(ctx, input) {
         let doc = SkillDoc::parse(&std::fs::read_to_string(dir.join("SKILL.md"))?);
         let folder = dir.file_name().unwrap().to_string_lossy().to_string();
         let name = doc.name.filter(|n| crate::id::valid_skill_name(n)).unwrap_or(folder);
-        let skill = crate::source_repo::skill_key_for_dir(&dir).unwrap_or_else(|| format!("local:{}", dir.display()));
-        return Ok(LinkTarget { skill, name, dir, tree: None, commit: None, dev: true, trial: false });
-    }
-    if let Some(t) = crate::source_repo::link_target_for_name(ctx, input)? {
-        return Ok(t);
+        return Ok(LinkTarget { skill: format!("local:{}", dir.display()), name, dir, tree: None, commit: None, dev: true, trial: true });
     }
     let spec = crate::lookup::spec_from_input(ctx, input)?;
     let hosted = SkillId::new(spec.source.clone(), &spec.selector);
@@ -115,7 +127,7 @@ pub fn link_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
                     trial: true,
                 })
             }
-            crate::hosted::StoreOutcome::Redirect(git_id) => link_target(ctx, &git_id),
+            crate::hosted::StoreOutcome::Redirect(git_id) => trial_target(ctx, &git_id),
         };
     }
     let r = resolve_skill(ctx, &spec, Fetch::IfStale)?;
@@ -131,13 +143,21 @@ pub fn link_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
     })
 }
 
-/// `tricks link [skill]`: link one skill, or with no skill every skill of the source repo.
+/// Placement key a skill name or id refers to (for `unlink`).
+pub fn target_key(ctx: &Ctx, input: &str) -> Option<String> {
+    match repo_target(ctx, input) {
+        Ok(Some(t)) => Some(t.skill),
+        _ => trial_target(ctx, input).ok().map(|t| t.skill),
+    }
+}
+
+/// `tricks link [skill]`: link a source repo skill, or with no skill all of them.
 pub fn link(ctx: &Ctx, input: Option<&str>, o: &LinkOptions) -> Result<LinkReport> {
     let agents_sel = agents_for(ctx, o.agents)?;
     let mut rep = LinkReport::default();
     let Some(input) = input else {
         let ws = crate::source_repo::current(ctx)?
-            .context("name a skill to link, or run `tricks link` inside a source repo to link all of its skills")?;
+            .context("`tricks link` links the skills of a source repo: run it inside one, or use `tricks try <skill>` for anything else")?;
         let scope = scope_for(ctx, o, false)?;
         for name in ws.manifest.skills.keys() {
             match crate::source_repo::place_skill(ctx, &ws, name, &agents_sel, &scope, o.copy, o.shadow) {
@@ -153,12 +173,34 @@ pub fn link(ctx: &Ctx, input: Option<&str>, o: &LinkOptions) -> Result<LinkRepor
         }
         return Ok(rep);
     };
-    let t = link_target(ctx, input)?;
+    let Some(t) = repo_target(ctx, input)? else {
+        match crate::source_repo::current(ctx)? {
+            Some(ws) => {
+                bail!("`{input}` is not a skill in source repo {}; to try a skill from elsewhere, use `tricks try {input}`", ws.name)
+            }
+            None => bail!("not inside a source repo; to try `{input}`, use `tricks try {input}`"),
+        }
+    };
+    rep.links.push(place(ctx, t, o, &agents_sel)?);
+    Ok(rep)
+}
+
+/// `tricks try <skill>`: link a skill that is not in the source repo, to evaluate it.
+pub fn try_skill(ctx: &Ctx, input: &str, o: &LinkOptions) -> Result<LinkReport> {
+    if repo_target(ctx, input)?.is_some() {
+        bail!("`{input}` is a skill of this source repo; link it with `tricks link {input}`");
+    }
+    let agents_sel = agents_for(ctx, o.agents)?;
+    let t = trial_target(ctx, input)?;
+    Ok(LinkReport { links: vec![place(ctx, t, o, &agents_sel)?], errors: vec![] })
+}
+
+fn place(ctx: &Ctx, t: LinkTarget, o: &LinkOptions, agents_sel: &[&'static Agent]) -> Result<Linked> {
     let scope = scope_for(ctx, o, t.trial)?;
     if t.dev && agents_sel.iter().any(|a| !a.follows_links(&t.dir)) && !o.copy {
         ctx.ui.warn("some selected agents cannot follow links here; they get a copy, so live edits will not show until you re-link");
     }
-    let origin = if t.trial { "link" } else { "source-repo" };
+    let origin = if t.trial { "trial" } else { "source-repo" };
     let mut placements = Vec::new();
     for a in agents_sel {
         let p = deploy::place(
@@ -178,8 +220,7 @@ pub fn link(ctx: &Ctx, input: Option<&str>, o: &LinkOptions) -> Result<LinkRepor
         )?;
         placements.push((a.id.to_string(), p.path, p.mode));
     }
-    rep.links.push(Linked { skill: t.skill, name: t.name, scope: scope.key(), trial: t.trial, placements });
-    Ok(rep)
+    Ok(Linked { skill: t.skill, name: t.name, scope: scope.key(), trial: t.trial, placements })
 }
 
 #[derive(Debug, Serialize)]
@@ -193,30 +234,28 @@ pub struct UnlinkOptions<'a> {
     pub global: bool,
     /// Every link, everywhere.
     pub all: bool,
-    /// User-scope installs left by New Tricks 0.2 and earlier.
-    pub legacy: bool,
 }
 
-const LEGACY: &str = "WHERE origin='user' AND skill<>'bundled:new-tricks'";
+/// Placements made by `link` and `try`.
+const LINKS: &str = "WHERE origin IN ('source-repo','trial','link')";
 
-/// `tricks unlink [skill]`: remove links of a skill; with no skill, every link of the
-/// current source repo's skills (or everything with `--all`).
+/// `tricks unlink [skill]`: remove the links (and trials) of a skill; with no skill, every
+/// link of the current source repo's skills (or everything with `--all`).
 pub fn unlink(ctx: &Ctx, input: Option<&str>, o: &UnlinkOptions) -> Result<UnlinkReport> {
     let scope = match (o.to, o.global) {
         (None, false) => None,
         _ => Some(scope_for(ctx, &LinkOptions { to: o.to, global: o.global, ..Default::default() }, false)?),
     };
     let keys: Option<Vec<String>> = match input {
-        Some(i) => Some(vec![link_target(ctx, i).map(|t| t.skill).unwrap_or_else(|_| i.to_string())]),
-        None if o.all || o.legacy => None,
+        Some(i) => Some(vec![target_key(ctx, i).unwrap_or_else(|| i.to_string())]),
+        None if o.all => None,
         None => match crate::source_repo::current(ctx)? {
             Some(ws) => Some(ws.manifest.skills.keys().map(|n| ws.skill_key(n)).collect()),
             None => bail!("name a skill to unlink, run it inside a source repo, or pass --all"),
         },
     };
-    let filter = if o.legacy { LEGACY } else { "WHERE origin IN ('link','source-repo')" };
     let mut removed = Vec::new();
-    for p in ctx.state.placements(filter, &[])? {
+    for p in ctx.state.placements(LINKS, &[])? {
         if let Some(s) = &scope
             && p.scope != s.key()
         {
@@ -246,7 +285,7 @@ pub struct LinkInfo {
     pub scope: String,
     pub path: String,
     pub mode: String,
-    /// dev (source repo or local skill) | trial (upstream skill)
+    /// dev (a source repo skill) | trial (`tricks try`)
     pub kind: String,
     /// ok | missing | replaced | target-missing | project-missing | drifted
     pub health: String,
@@ -256,29 +295,11 @@ pub struct LinkInfo {
 pub fn list(ctx: &Ctx) -> Result<Vec<LinkInfo>> {
     Ok(ctx
         .state
-        .placements("WHERE origin IN ('link','source-repo')", &[])?
+        .placements(LINKS, &[])?
         .into_iter()
         .map(|p| LinkInfo {
             health: deploy::health(&p),
-            kind: if p.origin == "link" { "trial".into() } else { "dev".into() },
-            skill: p.skill,
-            agent: p.agent,
-            scope: p.scope,
-            path: p.path,
-            mode: p.mode,
-        })
-        .collect())
-}
-
-/// User-scope installs left by New Tricks 0.2 and earlier (still deployed, no longer managed).
-pub fn legacy(ctx: &Ctx) -> Result<Vec<LinkInfo>> {
-    Ok(ctx
-        .state
-        .placements(LEGACY, &[])?
-        .into_iter()
-        .map(|p| LinkInfo {
-            health: deploy::health(&p),
-            kind: "legacy".into(),
+            kind: if p.origin == "source-repo" { "dev".into() } else { "trial".into() },
             skill: p.skill,
             agent: p.agent,
             scope: p.scope,

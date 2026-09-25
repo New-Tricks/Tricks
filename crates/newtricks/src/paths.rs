@@ -28,10 +28,7 @@ impl Paths {
     pub fn user_config(&self) -> PathBuf {
         self.config_dir.join("tricks.toml")
     }
-    /// The user-scope lock written by New Tricks 0.2 and earlier (reported by `doctor`).
-    pub fn legacy_user_lock(&self) -> PathBuf {
-        self.config_dir.join("tricks.lock")
-    }
+
     pub fn store(&self) -> PathBuf {
         self.data_dir.join("store")
     }

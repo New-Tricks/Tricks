@@ -73,7 +73,7 @@ pub fn contribute(ctx: &Ctx, name: &str, title: Option<&str>, body: Option<&str>
     if !outcome.is_clean() {
         let _ = git(&mirror.dir, &["worktree", "remove", "--force", &wt_root.to_string_lossy()]);
         bail!(
-            "your change conflicts with the current upstream ({}); run `tricks merge {name}` first",
+            "your change conflicts with the current upstream ({}); run `tricks sync {name}` first",
             outcome.conflicts.iter().map(|c| c.path.clone()).collect::<Vec<_>>().join(", ")
         );
     }

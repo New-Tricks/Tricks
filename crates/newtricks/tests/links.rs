@@ -1,5 +1,5 @@
-//! Links: source repo skills and upstream trials deployed for testing, git hygiene,
-//! shadowing, and cleanup of user-scope installs left by 0.2.
+//! Links and trials: source repo skills (`link`) and skills from elsewhere (`try`)
+//! deployed for testing, git hygiene and shadowing.
 // Asserts on symlinked placements; Windows deploys copies (spec §8), so these run on Unix.
 #![cfg(unix)]
 
@@ -27,8 +27,8 @@ fn is_link(p: &std::path::Path) -> bool {
 fn short_id_and_url_resolve_to_same_canonical() {
     let s = Sandbox::new();
     let r = hello_repo(&s);
-    let a = s.json(&["show", "acme/skills//hello"]);
-    let b = s.json(&["show", "https://github.com/acme/skills/tree/v1.0.0/skills/hello"]);
+    let a = s.json(&["info", "acme/skills//hello"]);
+    let b = s.json(&["info", "https://github.com/acme/skills/tree/v1.0.0/skills/hello"]);
     let c = s.json(&["info", "acme/skills//skills/hello@v1.0.0"]);
     assert_eq!(a["canonical"], "github.com/acme/skills//skills/hello@v1.0.0");
     assert_eq!(a["canonical"], b["canonical"]);
@@ -39,17 +39,17 @@ fn short_id_and_url_resolve_to_same_canonical() {
     git(&r, &["checkout", "-qb", "feature/terse"]);
     write(&r.join("skills/hello/SKILL.md"), &skill_md("hello", "Say hello. Use when greeting.", "terse\n"));
     let fc = commit_all(&r, "terse");
-    let d = s.json(&["show", "https://github.com/acme/skills/tree/feature/terse/skills/hello"]);
+    let d = s.json(&["info", "https://github.com/acme/skills/tree/feature/terse/skills/hello"]);
     assert_eq!(d["commit"], fc);
     assert_eq!(d["ref_name"], "feature/terse");
 }
 
 #[test]
-fn trying_an_upstream_skill_links_it_into_the_current_project() {
+fn try_links_an_upstream_skill_into_the_current_project() {
     let s = Sandbox::new();
     hello_repo(&s);
     let proj = s.project("app");
-    let r = s.json_in(&proj, &["link", "acme/skills//hello"]);
+    let r = s.json_in(&proj, &["try", "acme/skills//hello"]);
     assert_eq!(r["links"][0]["trial"], true, "{r}");
     assert_eq!(r["links"][0]["scope"], proj.to_string_lossy().as_ref());
     let claude = proj.join(".claude/skills/hello");
@@ -63,15 +63,15 @@ fn trying_an_upstream_skill_links_it_into_the_current_project() {
     assert!(!s.home.join(".claude/skills/hello").exists());
     assert!(!std::fs::read_to_string(s.config.join("tricks.toml")).unwrap().contains("hello"));
     // Copilot always gets a copy (microsoft/vscode#315979).
-    s.ok_in(&proj, &["link", "acme/skills//other", "--agents", "copilot"]);
+    s.ok_in(&proj, &["try", "acme/skills//other", "--agents", "copilot"]);
     let cp = proj.join(".github/skills/other");
     assert!(!is_link(&cp) && cp.join("SKILL.md").exists());
-    // Status and show report the trial.
-    let st = s.json(&["status"]);
+    // List and info report the trial.
+    let st = s.json(&["list"]);
     let links = st["links"].as_array().unwrap();
     assert_eq!(links.len(), 3, "{st}");
     assert!(links.iter().all(|l| l["kind"] == "trial" && l["health"] == "ok"), "{st}");
-    assert_eq!(s.json(&["show", "acme/skills//hello"])["linked"], true);
+    assert_eq!(s.json(&["info", "acme/skills//hello"])["linked"], true);
     // Unlinking removes the placements and prunes the store.
     let store = s.data.join("store");
     let before = std::fs::read_dir(&store).unwrap().count();
@@ -79,7 +79,7 @@ fn trying_an_upstream_skill_links_it_into_the_current_project() {
     assert!(std::fs::symlink_metadata(&claude).is_err());
     assert!(std::fs::read_dir(&store).unwrap().count() < before, "unlink prunes unreferenced store entries");
     s.ok(&["unlink", "--all"]);
-    assert!(s.json(&["status"])["links"].as_array().unwrap().is_empty());
+    assert!(s.json(&["list"])["links"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -87,8 +87,8 @@ fn repo_skills_link_globally_in_dev_mode_and_unlink_together() {
     let s = Sandbox::new();
     let ws = s.project("my-skills");
     s.ok_in(&ws, &["init"]);
-    s.ok_in(&ws, &["new", "greeter", "--description", "Greets people. Use when the user asks for a greeting."]);
-    s.ok_in(&ws, &["new", "farewell", "--description", "Says goodbye. Use when the user is leaving."]);
+    s.ok_in(&ws, &["create", "greeter", "--description", "Greets people. Use when the user asks for a greeting."]);
+    s.ok_in(&ws, &["create", "farewell", "--description", "Says goodbye. Use when the user is leaving."]);
     let r = s.json_in(&ws, &["link"]);
     assert_eq!(r["links"].as_array().unwrap().len(), 2, "{r}");
     assert!(r["links"].as_array().unwrap().iter().all(|l| l["scope"] == "global" && l["trial"] == false));
@@ -98,7 +98,7 @@ fn repo_skills_link_globally_in_dev_mode_and_unlink_together() {
     std::fs::write(ws.join("skills/greeter/SKILL.md"), "---\nname: greeter\ndescription: Greets. Use when greeting.\n---\nlive edit\n")
         .unwrap();
     assert!(std::fs::read_to_string(deployed.join("SKILL.md")).unwrap().contains("live edit"));
-    let st = s.json_in(&ws, &["status"]);
+    let st = s.json_in(&ws, &["list"]);
     assert_eq!(st["source_repo"]["skills"].as_array().unwrap().len(), 2);
     assert!(st["links"].as_array().unwrap().iter().all(|l| l["kind"] == "dev"));
     assert_eq!(s.ok_in(&ws, &["statusline"]).trim(), "tricks: 4 links");
@@ -111,9 +111,13 @@ fn repo_skills_link_globally_in_dev_mode_and_unlink_together() {
     assert!(std::fs::symlink_metadata(&deployed).is_err());
     assert!(std::fs::symlink_metadata(proj.join(".claude/skills/greeter")).is_err());
     assert_eq!(s.ok_in(&ws, &["statusline"]).trim(), "");
-    // Outside a repo, `link` needs a skill.
+    // `link` is for source repo skills; anything else is tried.
     let err = s.fail(&["link"]);
-    assert!(err.contains("inside a source repo"), "{err}");
+    assert!(err.contains("tricks try"), "{err}");
+    let err = s.fail_in(&ws, &["link", "acme/skills//hello"]);
+    assert!(err.contains("tricks try acme/skills//hello"), "{err}");
+    let err = s.fail_in(&ws, &["try", "greeter"]);
+    assert!(err.contains("tricks link greeter"), "{err}");
 }
 
 #[test]
@@ -124,9 +128,9 @@ fn link_into_project_keeps_git_clean_and_shadow_restores() {
     // Existing, unmanaged skill with the same name.
     write(&proj.join(".claude/skills/hello/SKILL.md"), "original\n");
     commit_all(&proj, "vendored skill");
-    let err = s.fail(&["link", "acme/skills//hello", "--to", proj.to_str().unwrap(), "--agents", "claude"]);
+    let err = s.fail(&["try", "acme/skills//hello", "--to", proj.to_str().unwrap(), "--agents", "claude"]);
     assert!(err.contains("--shadow"), "{err}");
-    s.ok(&["link", "acme/skills//hello", "--to", proj.to_str().unwrap(), "--agents", "claude,codex", "--shadow"]);
+    s.ok(&["try", "acme/skills//hello", "--to", proj.to_str().unwrap(), "--agents", "claude,codex", "--shadow"]);
     let st = git(&proj, &["status", "--porcelain"]);
     // The shadowed tracked file shows as a typechange only for the tracked path; the new
     // codex placement must be excluded.
@@ -145,62 +149,17 @@ fn link_untracked_project_placement_is_invisible_to_git() {
     let s = Sandbox::new();
     hello_repo(&s);
     let proj = s.project("app2");
-    s.ok(&["link", "acme/skills//hello", "--to", proj.to_str().unwrap(), "--agents", "claude,cursor"]);
+    s.ok(&["try", "acme/skills//hello", "--to", proj.to_str().unwrap(), "--agents", "claude,cursor"]);
     assert!(git(&proj, &["status", "--porcelain"]).is_empty());
     // A linked worktree shares the exclude file.
     let wt = s.root().join("projects/app2-wt");
     git(&proj, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "wt"]);
-    s.ok(&["link", "acme/skills//hello", "--to", wt.to_str().unwrap(), "--agents", "claude"]);
+    s.ok(&["try", "acme/skills//hello", "--to", wt.to_str().unwrap(), "--agents", "claude"]);
     assert!(git(&wt, &["status", "--porcelain"]).is_empty());
     s.ok(&["unlink", "hello", "--to", wt.to_str().unwrap()]);
     // Main checkout still excluded because its placement remains.
     assert!(git(&proj, &["status", "--porcelain"]).is_empty());
     s.ok(&["unlink", "--all"]);
-}
-
-#[test]
-fn user_scope_installs_from_0_2_are_reported_and_removable() {
-    let s = Sandbox::new();
-    // What New Tricks 0.2 left behind: a placement at user scope, a lock and a [skills] table.
-    let target = s.data.join("store/0123abcd");
-    write(&target.join("SKILL.md"), &skill_md("old", "An old install. Use when testing.", "old\n"));
-    let dest = s.home.join(".claude/skills/old");
-    std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
-    std::os::unix::fs::symlink(&target, &dest).unwrap();
-    let state = newtricks::state::State::open(&s.data.join("state.db")).unwrap();
-    state
-        .insert_placement(&newtricks::state::Placement {
-            id: 0,
-            skill: "github.com/acme/skills//skills/old".into(),
-            origin: "user".into(),
-            agent: "claude".into(),
-            scope: "global".into(),
-            path: dest.to_string_lossy().into(),
-            mode: "link".into(),
-            target: target.to_string_lossy().into(),
-            tree: Some("0123abcd".into()),
-            commit: None,
-            shadow_backup: None,
-            exclude_file: None,
-            exclude_entry: None,
-            created_at: 0,
-        })
-        .unwrap();
-    drop(state);
-    let cfg = s.config.join("tricks.toml");
-    std::fs::write(&cfg, format!("{}\n[skills]\n\"github.com/acme/skills//skills/old\" = {{ version = \"latest\" }}\n", read(&cfg)))
-        .unwrap();
-
-    assert_eq!(s.json(&["status"])["legacy"], 1);
-    let d = s.json(&["doctor"]);
-    let check = d["checks"].as_array().unwrap().iter().find(|c| c["name"] == "user-scope installs").unwrap_or_else(|| panic!("{d}"));
-    assert!(check["detail"].as_str().unwrap().contains("tricks unlink --legacy"), "{check}");
-    // `unlink --all` only touches links; `--legacy` removes the old install.
-    s.ok(&["unlink", "--all"]);
-    assert!(is_link(&dest));
-    s.ok(&["unlink", "--legacy"]);
-    assert!(std::fs::symlink_metadata(&dest).is_err());
-    assert_eq!(s.json(&["status"])["legacy"], 0);
 }
 
 #[test]

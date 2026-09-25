@@ -43,7 +43,6 @@ impl Policy {
 pub struct Settings {
     pub agents: Vec<String>,
     pub fetch_interval: String,
-    pub default_catalogs: bool,
     /// Live-query catalogs consulted on each search.
     pub live: Vec<String>,
 }
@@ -55,7 +54,6 @@ impl Default for Settings {
         Settings {
             agents: vec!["claude".into()],
             fetch_interval: "24h".into(),
-            default_catalogs: true,
             live: LIVE_CATALOGS.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -67,8 +65,6 @@ pub struct CatalogEntry {
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -79,9 +75,29 @@ pub struct UserConfig {
     pub source_repos: BTreeMap<String, String>,
     #[serde(default)]
     pub catalogs: BTreeMap<String, CatalogEntry>,
-    /// User-scope installs from New Tricks 0.2 and earlier (no longer managed; reported by `doctor`).
-    #[serde(default, skip_serializing)]
-    pub skills: BTreeMap<String, toml::Value>,
+}
+
+/// The user config written on first run: settings with their defaults and the
+/// recommended catalogs, all visible and editable.
+pub fn initial_user_config() -> String {
+    let live = LIVE_CATALOGS.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ");
+    let catalogs: String = crate::catalogs::RECOMMENDED.iter().map(|c| format!("\"{c}\" = {{}}\n")).collect();
+    format!(
+        r#"# New Tricks user config: https://github.com/new-tricks/tricks
+
+[settings]
+agents = ["claude"]      # agents to link skills for (a source repo can set its own)
+fetch_interval = "24h"   # how often catalogs and upstreams are fetched again
+live = [{live}]   # live-query catalogs asked on every search
+
+# Registered by `tricks init`.
+[source-repos]
+
+# Where `tricks search` looks. Add with `tricks catalog add`, remove with `tricks catalog remove`,
+# and restore the recommended set with `tricks catalog add --recommended`.
+[catalogs]
+{catalogs}"#
+    )
 }
 
 impl UserConfig {

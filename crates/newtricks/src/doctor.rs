@@ -92,20 +92,6 @@ pub fn run(ctx: &Ctx) -> Result<DoctorReport> {
             ),
         ));
     }
-    // User-scope installs from New Tricks 0.2 and earlier keep working but are no
-    // longer managed: install them with APM, `npx skills` or a plugin marketplace.
-    let legacy = crate::links::legacy(ctx)?;
-    if !legacy.is_empty() || !m.skills.is_empty() || ctx.paths.legacy_user_lock().exists() {
-        checks.push(check(
-            "user-scope installs",
-            false,
-            format!(
-                "{} skill(s) installed by New Tricks 0.2 are still deployed but no longer managed; reinstall them with APM or                  `npx skills add`, then remove the old copies with `tricks unlink --legacy` (and the [skills] table / tricks.lock in {})",
-                legacy.len().max(m.skills.len()),
-                ctx.paths.contract(&ctx.paths.config_dir)
-            ),
-        ));
-    }
     let unfinished = ctx.state.unfinished_ops()?;
     checks.push(check(
         "operations",

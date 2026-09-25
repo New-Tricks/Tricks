@@ -338,9 +338,9 @@ pub fn fts_query(q: &str) -> Option<String> {
     )
 }
 
-/// Upstream skills with an active trial link.
+/// Skills with an active trial (`tricks try`).
 pub fn linked_ids(ctx: &Ctx) -> BTreeSet<String> {
-    ctx.state.placements("WHERE origin='link'", &[]).map(|v| v.into_iter().map(|p| p.skill).collect()).unwrap_or_default()
+    ctx.state.placements("WHERE origin IN ('trial','link')", &[]).map(|v| v.into_iter().map(|p| p.skill).collect()).unwrap_or_default()
 }
 
 pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<SearchResult>> {

