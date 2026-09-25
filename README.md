@@ -5,7 +5,7 @@
 New Tricks does not manage the skills installed on your machine: that is what [APM](https://github.com/microsoft/apm), `npx skills` and plugin marketplaces are for, and what your published repository feeds. See [SPEC.md](SPEC.md) for the full design.
 
 ```
-discover ─► vendor / new ─► edit (branches, variants) ─► link & try with agents ─► lint ─► publish
+discover ─► create / vendor ─► edit on a branch ─► link & try with agents ─► merge ─► lint ─► publish
 ```
 
 ## Install
@@ -24,35 +24,40 @@ The VS Code extension (also Cursor, Windsurf, VSCodium) lives in [`extension/`](
 ```bash
 # Discover prior art: one search over skill repos, marketplaces, skills.sh, Tessl, ClawHub and GitHub
 tricks search pdf forms --license allow --no-scripts
-tricks show anthropics/skills//skill-creator          # licence, risk, catalog signals, files, body
-tricks link anthropics/skills//webapp-testing         # try it in this project (git status stays clean)
+tricks info anthropics/skills//skill-creator          # licence, risk, catalog signals, frontmatter, files
+tricks view anthropics/skills//skill-creator          # the content, rendered
+tricks try anthropics/skills//webapp-testing          # try it in this project (git status stays clean)
 tricks unlink webapp-testing
 
 # Start a source repo: any git repository
 cd ~/code/my-skills && tricks init [--agent-skill]    # --agent-skill: teach this repo's agents New Tricks
-tricks vendor anthropics/skills//skill-creator        # copy upstream in, record its base
+tricks create changelog-writer --description "Writes release notes… Use when …"
+tricks create my-skill --from ~/old/my-skill          # or take an existing folder
+tricks vendor anthropics/skills//skill-creator        # copy an upstream skill in, record its base
 tricks vendor clawhub.ai/awspace/skills//pdf          # catalog-hosted skills too (SHA-256 verified per file)
-tricks vendor ~/old/my-skill                          # or a local folder
-tricks new changelog-writer --description "Writes release notes… Use when …"
+tricks list                                           # skills, variants, upstream changes
 
 # Try your skills with real agents
 tricks link                                           # every skill, user-level agent dirs, dev mode: edits are live
 tricks link changelog-writer --to ~/code/my-app       # or one skill into one project
-tricks status                                         # skills, variants, upstream changes, links
+tricks list --links
 
-# Experiment
-tricks edit changelog-writer --branch terse           # worktree; linked agents load the draft
-git -C <worktree> commit -am "Terser output" && tricks edit changelog-writer --done
+# Experiment on a branch
+tricks edit changelog-writer -b terse                 # worktree; linked agents load the draft
+tricks edit changelog-writer --commit -m "Terser output"
+tricks diff changelog-writer head..terse
 tricks use changelog-writer@terse [--local]           # pick the variant links deploy
+tricks merge changelog-writer@terse [--pr] [--whole-branch]   # bring it back (only the skill, by default)
 
 # Keep up with upstream
-tricks merge --dry-run                                # what changed upstream, with a risk summary
-tricks merge skill-creator                            # 3-way merge into yours, left uncommitted
-tricks merge --continue | --abort                     # after resolving conflicts
-tricks diff skill-creator --from base --to working    # what did I change?
+tricks outdated [--diff]                              # what changed upstream, with a risk summary
+tricks sync skill-creator [--dry-run]                 # 3-way merge into yours, left uncommitted
+tricks sync --continue | --abort                      # after resolving conflicts
+tricks diff skill-creator base..                      # what did I change?
 tricks contribute skill-creator                       # offer your change upstream as a pull request
 
 tricks lint [--fix] [--strict]                        # --strict: keys outside the spec are errors, like skills-ref
+tricks remove my-skill
 ```
 
 To have the bundled `new-tricks` agent skill everywhere, install it like any published skill: `npx skills add new-tricks/tricks`.
@@ -88,7 +93,7 @@ https://github.com/anthropics/skills/tree/main/skills/pdf
 
 | File | Purpose |
 |---|---|
-| `~/.config/newtricks/tricks.toml` | User config: settings, catalogs, registered source repos |
+| `~/.config/newtricks/tricks.toml` | User config: settings, catalogs (the recommended ones are written on first run), registered source repos |
 | `<source-repo>/tricks.toml` / `.lock` | Source repo skills, upstreams, lint config, publish targets / recorded bases |
 | `<source-repo>/tricks.work.toml` | Machine-local variant overrides (gitignored) |
 

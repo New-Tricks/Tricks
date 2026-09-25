@@ -34,7 +34,7 @@ export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
       return ws.skills.map((s) => {
         const it = new SkillItem(s.name, s.name, vscode.TreeItemCollapsibleState.Collapsed, "repoSkill", s);
         const badges: string[] = [];
-        if (s.merge_in_progress) badges.push("merging");
+        if (s.merge_in_progress) badges.push("syncing");
         if (s.update_available) badges.push(`update ${s.update_available}`);
         if (s.customized) badges.push("customized");
         if (s.lint_errors) badges.push(`${s.lint_errors} lint error${s.lint_errors > 1 ? "s" : ""}`);
@@ -46,7 +46,7 @@ export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
         const ctx = ["repoSkill"];
         if (s.upstream) ctx.push("vendored");
         if (s.update_available) ctx.push("updateReady");
-        if (s.merge_in_progress) ctx.push("merging");
+        if (s.merge_in_progress) ctx.push("syncing");
         if (s.editing) ctx.push("editing");
         it.contextValue = ctx.join(" ");
         it.iconPath = new vscode.ThemeIcon(
@@ -75,13 +75,18 @@ export class SourceRepoTree implements vscode.TreeDataProvider<SkillItem> {
     };
     const out: SkillItem[] = [];
     out.push(d(s.upstream ? `from ${s.upstream.replace(/^github\.com\//, "")}` : "local original", s.upstream ? "repo" : "home"));
-    if (s.update_available) out.push(d(`upstream has ${s.update_available} — merge`, "git-merge", { command: "tricks.merge", title: "Merge", arguments: [e] }));
+    if (s.update_available) out.push(d(`upstream has ${s.update_available} — sync`, "cloud-download", { command: "tricks.sync", title: "Sync", arguments: [e] }));
     if (s.merge_in_progress) {
-      out.push(d("merge in progress — continue", "check", { command: "tricks.mergeContinue", title: "Continue", arguments: [e] }));
-      out.push(d("abort merge", "discard", { command: "tricks.mergeAbort", title: "Abort", arguments: [e] }));
+      out.push(d("sync in progress — continue", "check", { command: "tricks.syncContinue", title: "Continue", arguments: [e] }));
+      out.push(d("abort sync", "discard", { command: "tricks.syncAbort", title: "Abort", arguments: [e] }));
     }
     if (s.upstream) out.push(d("show changes…", "diff", { command: "tricks.changes", title: "Changes", arguments: [e] }));
-    for (const b of s.branches) out.push(d(`branch ${b}${s.variant === b ? " (in use)" : ""}`, "git-branch", { command: "tricks.useVariant", title: "Use", arguments: [e, b] }));
+    for (const b of s.branches) {
+      const it = d(`branch ${b}${s.variant === b ? " (in use)" : ""}${s.editing === b ? " (editing)" : ""}`, "git-branch", { command: "tricks.useVariant", title: "Use", arguments: [e, b] });
+      it.contextValue = "branch";
+      (it as any).branch = b;
+      out.push(it);
+    }
     if (s.dev_links) out.push(d(`${s.dev_links} link(s)`, "link"));
     return out;
   }

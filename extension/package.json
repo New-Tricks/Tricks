@@ -2,7 +2,7 @@
   "name": "new-tricks",
   "displayName": "New Tricks",
   "description": "Teach your agents new tricks: author, customize and test agent skills in a source repo — federated search, vendoring with upstream merges, branch experiments, links for testing, lint and publish.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "newtricks",
   "license": "Apache-2.0",
   "repository": {
@@ -108,10 +108,16 @@
         "category": "New Tricks"
       },
       {
-        "command": "tricks.newSkill",
-        "title": "New Skill…",
+        "command": "tricks.createSkill",
+        "title": "Create Skill…",
         "category": "New Tricks",
         "icon": "$(add)"
+      },
+      {
+        "command": "tricks.removeSkill",
+        "title": "Remove Skill…",
+        "category": "New Tricks",
+        "icon": "$(trash)"
       },
       {
         "command": "tricks.lint",
@@ -142,19 +148,19 @@
         "icon": "$(cloud-download)"
       },
       {
-        "command": "tricks.merge",
-        "title": "Merge Upstream Changes",
+        "command": "tricks.sync",
+        "title": "Sync with Upstream",
         "category": "New Tricks",
-        "icon": "$(git-merge)"
+        "icon": "$(cloud-download)"
       },
       {
-        "command": "tricks.mergeContinue",
-        "title": "Continue Upstream Merge",
+        "command": "tricks.syncContinue",
+        "title": "Continue Sync",
         "category": "New Tricks"
       },
       {
-        "command": "tricks.mergeAbort",
-        "title": "Abort Upstream Merge",
+        "command": "tricks.syncAbort",
+        "title": "Abort Sync",
         "category": "New Tricks"
       },
       {
@@ -162,6 +168,18 @@
         "title": "Edit on Branch…",
         "category": "New Tricks",
         "icon": "$(git-branch)"
+      },
+      {
+        "command": "tricks.commitDraft",
+        "title": "Commit Draft…",
+        "category": "New Tricks",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "tricks.mergeBranch",
+        "title": "Merge Branch…",
+        "category": "New Tricks",
+        "icon": "$(git-merge)"
       },
       {
         "command": "tricks.editDone",
@@ -228,7 +246,7 @@
           "group": "navigation"
         },
         {
-          "command": "tricks.newSkill",
+          "command": "tricks.createSkill",
           "when": "view == tricks.sourceRepo",
           "group": "navigation"
         },
@@ -270,7 +288,7 @@
           "group": "inline"
         },
         {
-          "command": "tricks.merge",
+          "command": "tricks.sync",
           "when": "view == tricks.sourceRepo && viewItem =~ /updateReady/",
           "group": "inline"
         },
@@ -278,6 +296,16 @@
           "command": "tricks.editOnBranch",
           "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
           "group": "2_edit@1"
+        },
+        {
+          "command": "tricks.commitDraft",
+          "when": "view == tricks.sourceRepo && viewItem =~ /editing/",
+          "group": "2_edit@2"
+        },
+        {
+          "command": "tricks.mergeBranch",
+          "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
+          "group": "2_edit@4"
         },
         {
           "command": "tricks.editDone",
@@ -300,18 +328,18 @@
           "group": "4_upstream@1"
         },
         {
-          "command": "tricks.merge",
+          "command": "tricks.sync",
           "when": "view == tricks.sourceRepo && viewItem =~ /vendored/",
           "group": "4_upstream@2"
         },
         {
-          "command": "tricks.mergeContinue",
-          "when": "view == tricks.sourceRepo && viewItem =~ /merging/",
+          "command": "tricks.syncContinue",
+          "when": "view == tricks.sourceRepo && viewItem =~ /syncing/",
           "group": "4_upstream@3"
         },
         {
-          "command": "tricks.mergeAbort",
-          "when": "view == tricks.sourceRepo && viewItem =~ /merging/",
+          "command": "tricks.syncAbort",
+          "when": "view == tricks.sourceRepo && viewItem =~ /syncing/",
           "group": "4_upstream@4"
         },
         {
@@ -323,6 +351,16 @@
           "command": "tricks.unlink",
           "when": "view == tricks.links && viewItem == link",
           "group": "inline"
+        },
+        {
+          "command": "tricks.mergeBranch",
+          "when": "view == tricks.sourceRepo && viewItem == branch",
+          "group": "inline"
+        },
+        {
+          "command": "tricks.removeSkill",
+          "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
+          "group": "9_remove@1"
         }
       ],
       "commandPalette": [

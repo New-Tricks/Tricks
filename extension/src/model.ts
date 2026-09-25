@@ -39,11 +39,11 @@ export interface LinkInfo {
   health: string;
 }
 
+/** `tricks list`: the source repo's skills, registered source repos, and links. */
 export interface Status {
   source_repo: RepoStatus | null;
   links: LinkInfo[];
   repos: { name: string; root: string; skills: number }[];
-  legacy: number;
   unfinished_operations: string[];
 }
 
@@ -58,7 +58,7 @@ export class Model implements vscode.Disposable {
 
   async refresh(): Promise<void> {
     try {
-      this.status = await this.client.request<Status>("status", {}, { confirm: false });
+      this.status = await this.client.request<Status>("list", {}, { confirm: false });
       this.error = undefined;
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);

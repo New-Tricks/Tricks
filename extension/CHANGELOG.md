@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- **Create Skill…** (new, or from a folder) replaces *New Skill…*; **Remove Skill…** takes a skill out of the source repo.
+- **Commit Draft…** commits a draft on the branch you're editing; **Merge Branch…** brings it back — just the skill or the whole branch, locally or as a pull request. Branch items in the Source Repo view offer it inline.
+- Upstream: **Sync with Upstream** (was *Merge Upstream Changes*), **Continue Sync** / **Abort Sync**; **Check Upstream Changes** uses `tricks outdated`.
+- **Show Changes…** can compare a skill with any of its branches.
+- Preview reads skill details with `tricks info`; *Try* uses `tricks try`.
+
 ## 0.3.0
 
 New Tricks now works on one thing: the **source repo**. Installing and updating skills on your machine is left to APM, `npx skills` and plugin marketplaces.

@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   sh(ws, "git", ["init", "-q", "-b", "main"], env);
   sh(ws, bin, ["init"], env);
   sh(ws, bin, ["vendor", "acme/skills//hello"], env);
-  sh(ws, bin, ["new", "broken", "--description", "Short."], env);
+  sh(ws, bin, ["create", "broken", "--description", "Short."], env);
   fs.appendFileSync(path.join(ws, "tricks.toml"), '\n[publish.targets.public]\nrepo = "../pub.git"\nskills = ["hello"]\n');
   fs.mkdirSync(path.join(ws, ".vscode"));
   fs.writeFileSync(path.join(ws, ".vscode/settings.json"), JSON.stringify({ "tricks.path": bin }));

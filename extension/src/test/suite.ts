@@ -1,5 +1,6 @@
 import * as assert from "assert";
 import * as cp from "child_process";
+import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { remoteUri, versionUri } from "../docs";
@@ -10,7 +11,7 @@ export async function run(): Promise<void> {
   const api: any = await ext!.activate();
   // Commands are registered.
   const cmds = await vscode.commands.getCommands(true);
-  for (const c of ["tricks.search", "tricks.merge", "tricks.publish", "tricks.changes", "tricks.linkAll", "tricks.linkToProject", "tricks.try", "tricks.editDone"]) {
+  for (const c of ["tricks.search", "tricks.sync", "tricks.mergeBranch", "tricks.commitDraft", "tricks.createSkill", "tricks.removeSkill", "tricks.publish", "tricks.changes", "tricks.linkAll", "tricks.linkToProject", "tricks.try", "tricks.editDone"]) {
     assert.ok(cmds.includes(c), `missing command ${c}`);
   }
   // Status via the real binary over JSON-RPC.
@@ -42,6 +43,17 @@ export async function run(): Promise<void> {
   assert.ok(linked.length >= 2 && linked.every((l: any) => l.kind === "dev" && l.scope === "global"), JSON.stringify(linked));
   await vscode.commands.executeCommand("tricks.unlinkAll");
   assert.strictEqual(api.model.status.links.length, 0);
+
+  // Experiment on a branch, commit the draft, merge the skill back (the RPC calls the
+  // Commit Draft… and Merge Branch… commands make).
+  const ed = await api.client.request("sourceRepo/edit", { skill: "hello", branch: "polish" });
+  fs.writeFileSync(path.join(ed.path, "SKILL.md"), fs.readFileSync(path.join(ed.path, "SKILL.md"), "utf8") + "\nPolished.\n");
+  const draft = await api.client.request("sourceRepo/edit", { skill: "hello", commit: true, message: "polish hello" });
+  assert.strictEqual(draft.branch, "polish", JSON.stringify(draft));
+  const merged = await api.client.request("sourceRepo/merge", { spec: "hello@polish", wholeBranch: false, pr: false });
+  assert.ok(merged.commit && merged.mode === "skill", JSON.stringify(merged));
+  assert.ok(fs.readFileSync(path.join(st.source_repo.root, "skills/hello/SKILL.md"), "utf8").includes("Polished."));
+  await api.refreshAll();
 
   // Discover: messages from the webview go through the real core.
   const posts: any[] = [];

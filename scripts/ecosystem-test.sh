@@ -34,8 +34,8 @@ TARGET="$T/demo-skills"
 WS="$T/ws"
 mkdir -p "$WS" && git -C "$WS" init -q -b main
 (cd "$WS" && "$TRICKS" -q init --name demo >/dev/null)
-(cd "$WS" && "$TRICKS" -q new greeter --description "Writes friendly greetings for any occasion. Use when the user asks for a greeting or welcome message." >/dev/null)
-(cd "$WS" && "$TRICKS" -q new changelog-writer --description "Drafts release notes from git history. Use when the user asks for a changelog or release notes." >/dev/null)
+(cd "$WS" && "$TRICKS" -q create greeter --description "Writes friendly greetings for any occasion. Use when the user asks for a greeting or welcome message." >/dev/null)
+(cd "$WS" && "$TRICKS" -q create changelog-writer --description "Drafts release notes from git history. Use when the user asks for a changelog or release notes." >/dev/null)
 for s in greeter changelog-writer; do
   printf -- '---\nname: %s\ndescription: %s\nlicense: MIT\n---\n\n# %s\n\n1. Read the request.\n2. Produce the output.\n' \
     "$s" "$(sed -n 's/^description: //p' "$WS/skills/$s/SKILL.md")" "$s" > "$WS/skills/$s/SKILL.md"
