@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Terminology: the Workspace view is now **Source Repo**, workbench skills are **user skills**, and search sources are **catalogs**. Command ids follow (`tricks.initSourceRepo`, `tricks.userUpdate`).
 - Publish panel: choose between pushing to the target and opening a pull request (one is required).

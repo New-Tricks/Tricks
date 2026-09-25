@@ -2,7 +2,7 @@
   "name": "new-tricks",
   "displayName": "New Tricks",
   "description": "Teach your agents new tricks: federated skill search, preview, customize upstream skills, branch experiments, lint and publish.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "newtricks",
   "license": "Apache-2.0",
   "repository": {
