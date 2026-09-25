@@ -88,8 +88,7 @@ fn split_frontmatter(text: &str) -> Option<(&str, &str, usize)> {
     }
     let rest = &text[first_nl + 1..];
     let mut offset = 0;
-    let mut line_no = 2;
-    for line in rest.split_inclusive('\n') {
+    for (line_no, line) in (2..).zip(rest.split_inclusive('\n')) {
         let t = line.trim_end();
         if t == "---" || t == "..." {
             let fm = &rest[..offset];
@@ -97,7 +96,6 @@ fn split_frontmatter(text: &str) -> Option<(&str, &str, usize)> {
             return Some((fm, body, line_no + 1));
         }
         offset += line.len();
-        line_no += 1;
     }
     None
 }

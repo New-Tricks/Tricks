@@ -38,7 +38,7 @@ jobs:
           node-version: 22
       - run: npm ci --no-audit --no-fund
       - run: npx tsc -p .
-      - run: node out/test/protocol.test.js
+      - run: npm test
       - run: npx vsce package --no-dependencies -o new-tricks.vsix
 
   extension-integration:

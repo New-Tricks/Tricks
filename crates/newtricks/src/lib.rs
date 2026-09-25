@@ -19,6 +19,7 @@ pub mod inspect;
 pub mod license;
 pub mod links;
 pub mod lint;
+pub mod live;
 pub mod lookup;
 pub mod merge;
 pub mod paths;

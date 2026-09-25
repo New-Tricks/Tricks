@@ -278,7 +278,7 @@ base_tree = "9f3c…"
 ### Adapter modes
 
 - **Indexed**: fetched ahead of time (on `catalog add` and throttled refresh) into the local index.
-- **Live-query**: called at search time when online; results are merged with indexed results and cached in the index with a TTL, so repeat and offline searches still find them.
+- **Live-query**: called at search time when online, all enabled adapters concurrently; results are merged with indexed results and cached in the index with a TTL, so repeat and offline searches still find them.
 
 ### v1 adapters
 

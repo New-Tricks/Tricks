@@ -8,6 +8,7 @@ use crate::git::host_map;
 use crate::github::{GitHub, encode_query, is_not_found};
 use crate::id::{SourceId, parse_source_input};
 use crate::index::{self, IndexedSkill};
+use crate::live::{Found, Listing, Target};
 use crate::resolve::{Fetch, open_mirror};
 use crate::state::now;
 use anyhow::{Context, Result, anyhow, bail};
@@ -342,6 +343,53 @@ pub fn index_repos(ctx: &Ctx, repos: &[(SourceId, Option<Vec<String>>, String)])
         ctx.ui.warn(&w);
     }
     out
+}
+
+/// The network half of indexing a GitHub repository (optionally only some skill
+/// directories), done off the database thread by live adapters.
+pub struct Prefetched {
+    pub src: SourceId,
+    pub filter: Option<Vec<String>>,
+    pub result: Result<RepoFetch>,
+    pub warnings: Vec<String>,
+}
+
+/// Whether a source is indexed through the GitHub API (and can be prefetched).
+pub(crate) fn api_indexable(src: &SourceId) -> bool {
+    use_api(src)
+}
+
+pub(crate) fn prefetch(gh: &GitHub, jobs: Vec<(SourceId, Option<Vec<String>>)>) -> Vec<Prefetched> {
+    parallel_map(jobs, 6, |(src, filter)| {
+        let sink: WarnSink = Default::default();
+        let result = fetch_github(gh, &src, filter.as_deref(), &src.to_string(), &sink);
+        Prefetched { src, filter, result, warnings: sink.into_inner().unwrap_or_default() }
+    })
+}
+
+/// Store a prefetched repository and mark it (or its directories) fresh.
+pub(crate) fn store_prefetched(ctx: &Ctx, p: Prefetched) -> Result<()> {
+    for w in &p.warnings {
+        ctx.ui.warn(w);
+    }
+    store_fetch(ctx, &p.src, p.filter.as_deref(), p.result?)?;
+    match &p.filter {
+        None => ctx.state.mark_fetched(&format!("index:{}", p.src))?,
+        Some(dirs) => {
+            for d in dirs {
+                ctx.state.mark_fetched(&format!("index:{}//{d}", p.src))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `index:` freshness keys that are still fresh (a snapshot for prefetching threads).
+pub(crate) fn fresh_index_keys(ctx: &Ctx) -> BTreeSet<String> {
+    let interval = crate::user::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
+    let since = now() - interval.as_secs() as i64;
+    let Ok(mut st) = ctx.state.conn.prepare("SELECT key FROM fetches WHERE key LIKE 'index:%' AND at > ?1") else { return BTreeSet::new() };
+    st.query_map([since], |r| r.get::<_, String>(0)).map(|rows| rows.flatten().collect()).unwrap_or_default()
 }
 
 pub struct RepoFetch {
@@ -804,39 +852,28 @@ struct SkillsShItem {
     source: Option<String>,
 }
 
-/// skills.sh live search (unauthenticated endpoint used by `npx skills find`).
-pub fn live_skills_sh(ctx: &Ctx, q: &str, max_repos: usize) -> Result<usize> {
-    if ctx.opts.offline || q.trim().is_empty() || live_fresh(ctx, "skills.sh", q)? {
-        return Ok(0);
-    }
+/// skills.sh live query (unauthenticated endpoint used by `npx skills find`). Results
+/// name a repository and skill; the git adapter supplies the content.
+pub fn skills_sh_query(gh: &GitHub, q: &str, max_repos: usize, emit: &mut dyn FnMut(Found)) -> Result<()> {
     let base = std::env::var("TRICKS_SKILLS_SH_URL").unwrap_or_else(|_| "https://skills.sh".into());
     let url = format!("{base}/api/search?q={}&limit=20", encode_query(q));
-    let r = ctx.gh.get_public(&url)?;
+    let r = gh.get_public(&url)?;
     if r.status != 200 {
         bail!("skills.sh search returned {}", r.status);
     }
     let resp: SkillsShResponse = serde_json::from_slice(&r.body)?;
-    let mut repos: Vec<SourceId> = Vec::new();
-    for it in &resp.skills {
-        if let Some(src) = it.source.as_deref().and_then(|s| SourceId::parse(s).ok())
-            && !repos.contains(&src)
-        {
-            repos.push(src);
-        }
-    }
-    repos.truncate(max_repos);
-    ensure_repos_indexed(ctx, &repos);
-    let mut n = 0;
+    let mut f = Found::default();
     for it in resp.skills {
         let Some(src) = it.source.as_deref().and_then(|s| SourceId::parse(s).ok()) else { continue };
-        let key = it.skill_id.or(it.name).unwrap_or_default();
-        if let Some(id) = index::find_in_source(ctx, &src.to_string(), &key)? {
-            index::add_listing(ctx, &id, "skills.sh", it.installs, None)?;
-            n += 1;
+        if !f.repos.contains(&src) {
+            f.repos.push(src.clone());
         }
+        let name = it.skill_id.or(it.name).unwrap_or_default();
+        f.listings.push(Listing { target: Target::Named { source: src, name }, installs: it.installs, signals: None });
     }
-    live_mark(ctx, "skills.sh", q)?;
-    Ok(n)
+    f.repos.truncate(max_repos);
+    emit(f);
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -856,15 +893,13 @@ struct CodeRepo {
     full_name: String,
 }
 
-/// GitHub code search for SKILL.md files (requires a token).
-pub fn live_github_search(ctx: &Ctx, q: &str, max_repos: usize) -> Result<usize> {
-    if ctx.opts.offline || q.trim().is_empty() || ctx.gh.token("github.com").is_none() || live_fresh(ctx, "github", q)? {
-        return Ok(0);
-    }
+/// GitHub code search for `SKILL.md` files (needs a token). Only the matching skill
+/// directories are indexed.
+pub fn github_query(gh: &GitHub, q: &str, max_repos: usize, emit: &mut dyn FnMut(Found)) -> Result<()> {
     let path = format!("/search/code?q={}+filename:SKILL.md&per_page=30", encode_query(q));
-    let res: CodeSearch = match ctx.gh.api_json("github.com", &path) {
+    let res: CodeSearch = match gh.api_json("github.com", &path) {
         Ok(r) => r,
-        Err(e) if is_not_found(&e) => return Ok(0),
+        Err(e) if is_not_found(&e) => return Ok(()),
         Err(e) => return Err(e),
     };
     let mut by_repo: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -872,25 +907,14 @@ pub fn live_github_search(ctx: &Ctx, q: &str, max_repos: usize) -> Result<usize>
         let dir = it.path.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_else(|| ".".into());
         by_repo.entry(it.repository.full_name).or_default().push(dir);
     }
-    let mut n = 0;
-    let jobs: Vec<(SourceId, Option<Vec<String>>, String)> = by_repo
-        .into_iter()
-        .take(max_repos)
-        .filter_map(|(repo, dirs)| {
-            SourceId::parse(&repo).ok().map(|s| {
-                let o = s.to_string();
-                (s, Some(dirs), o)
-            })
-        })
-        .collect();
-    for (src, r) in index_repos(ctx, &jobs) {
-        match r {
-            Ok(k) => n += k,
-            Err(e) => ctx.ui.warn(&format!("github search: {src}: {e:#}")),
+    let mut f = Found::default();
+    for (repo, dirs) in by_repo.into_iter().take(max_repos) {
+        if let Ok(src) = SourceId::parse(&repo) {
+            f.dirs.extend(dirs.into_iter().map(|d| (src.clone(), d)));
         }
     }
-    live_mark(ctx, "github", q)?;
-    Ok(n)
+    emit(f);
+    Ok(())
 }
 
 // ---------------------------------------------------------------- identity

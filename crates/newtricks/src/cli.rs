@@ -517,26 +517,8 @@ fn first_run_offer(ctx: &Ctx, cmd: &Cmd, yes: bool) {
 pub fn do_search(ctx: &Ctx, a: &SearchArgs) -> Result<Vec<crate::index::SearchResult>> {
     let q = a.query.join(" ");
     let _ = crate::catalogs::refresh(ctx, a.refresh, None)?;
-    if !a.no_live && !ctx.opts.offline && !q.trim().is_empty() {
-        let live = crate::user::load_manifest(ctx)?.settings.live;
-        let on = |c: &str| live.iter().any(|x| x == c);
-        let report = |name: &str, r: Result<usize>| {
-            if let Err(e) = r {
-                ctx.ui.warn(&format!("{name}: {e:#}"));
-            }
-        };
-        if on("skills.sh") {
-            report("skills.sh", crate::catalogs::live_skills_sh(ctx, &q, 6));
-        }
-        if on("tessl") {
-            report("Tessl", crate::tessl::live_search(ctx, &q, 20));
-        }
-        if on("clawhub") {
-            report("ClawHub", crate::clawhub::live_search(ctx, &q, 20));
-        }
-        if on("github") {
-            report("GitHub code search", crate::catalogs::live_github_search(ctx, &q, 5));
-        }
+    if !a.no_live {
+        crate::live::search(ctx, &q, &crate::user::load_manifest(ctx)?.settings.live);
     }
     let f = Filters {
         agent: a.agent.clone(),

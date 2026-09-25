@@ -8,6 +8,7 @@ use crate::ctx::Ctx;
 use crate::github::{GitHub, encode_query};
 use crate::id::{SkillId, SourceId};
 use crate::index::{self, IndexedSkill};
+use crate::live::{Found, Listing, Target};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use sha2::Digest;
@@ -100,9 +101,17 @@ pub fn detail(gh: &GitHub, owner: &str, slug: &str, version: Option<&str>) -> Re
     }))
 }
 
+/// A native ClawHub skill found by search, with its detail.
+pub struct Native {
+    pub owner: String,
+    pub slug: String,
+    pub detail: Detail,
+}
+
 /// Index a native ClawHub skill from its detail (no download needed).
-fn index_native(ctx: &Ctx, owner: &str, slug: &str, d: Detail) -> Result<String> {
-    let id = id_for(owner, slug);
+pub(crate) fn index_native(ctx: &Ctx, n: Native) -> Result<String> {
+    let Native { owner, slug, detail: d } = n;
+    let id = id_for(&owner, &slug);
     let files: Vec<(String, bool)> = d.files.iter().map(|(p, _)| (p.clone(), false)).collect();
     let mut rec = IndexedSkill::from_content(
         &id.source,
@@ -123,16 +132,14 @@ fn index_native(ctx: &Ctx, owner: &str, slug: &str, d: Detail) -> Result<String>
     Ok(rec.id)
 }
 
-/// Live search: mirrors become git pointers; native skills are indexed from their detail.
-pub fn live_search(ctx: &Ctx, q: &str, limit: usize) -> Result<usize> {
-    if ctx.opts.offline || q.trim().is_empty() || crate::catalogs::live_fresh(ctx, CATALOG, q)? {
-        return Ok(0);
-    }
+/// Live query (network only). Mirrors of GitHub skills are emitted as soon as search
+/// returns; native skills follow once their details are fetched (ClawHub's API takes
+/// seconds per call and a native skill needs two, so details are fetched in parallel).
+pub fn query(gh: &GitHub, q: &str, limit: usize, emit: &mut dyn FnMut(Found)) -> Result<()> {
     // Skills ClawHub flags as suspicious are excluded from search.
-    let resp = get_json(&ctx.gh, &format!("/api/v1/search?q={}&limit={limit}&nonSuspiciousOnly=true", encode_query(q)))?;
+    let resp = get_json(gh, &format!("/api/v1/search?q={}&limit={limit}&nonSuspiciousOnly=true", encode_query(q)))?;
     let results = resp["results"].as_array().cloned().unwrap_or_default();
-    let mut repos: Vec<SourceId> = Vec::new();
-    let mut mirrors: Vec<(SourceId, String, Option<i64>)> = Vec::new();
+    let mut mirrors = Found::default();
     let mut natives: Vec<(String, String)> = Vec::new();
     for r in &results {
         let si = &r["sourceIdentity"];
@@ -140,10 +147,14 @@ pub fn live_search(ctx: &Ctx, q: &str, limit: usize) -> Result<usize> {
         if let (Some(owner), Some(repo)) = (si["owner"].as_str(), si["repo"].as_str()) {
             let src = SourceId::new(si["host"].as_str().unwrap_or("github.com"), &format!("{owner}/{repo}"));
             let name = si["id"].as_str().and_then(|i| i.rsplit('/').next()).or(r["slug"].as_str()).unwrap_or_default().to_string();
-            if !repos.contains(&src) {
-                repos.push(src.clone());
+            if !mirrors.repos.contains(&src) {
+                mirrors.repos.push(src.clone());
             }
-            mirrors.push((src, name, si["lifetimeInstalls"].as_i64()));
+            mirrors.listings.push(Listing {
+                target: Target::Named { source: src, name },
+                installs: si["lifetimeInstalls"].as_i64(),
+                signals: None,
+            });
         } else if kind == "clawhub"
             && let (Some(owner), Some(slug)) = (r["ownerHandle"].as_str(), r["slug"].as_str())
             && natives.len() < MAX_NATIVE
@@ -151,39 +162,28 @@ pub fn live_search(ctx: &Ctx, q: &str, limit: usize) -> Result<usize> {
             natives.push((owner.to_string(), slug.to_string()));
         }
     }
-    repos.truncate(6);
-    // ClawHub's API is slow (seconds per call) and a native skill needs two calls, so
-    // fetch details in parallel while the mirrored repositories are indexed.
-    let gh = &ctx.gh;
+    mirrors.repos.truncate(6);
+    // Fetch native details while the mirrors' repositories are fetched.
     let details = std::thread::scope(|s| {
         let h = s.spawn(|| {
-            crate::catalogs::parallel_map(natives, MAX_NATIVE, |(o, sl)| {
-                let d = detail(gh, &o, &sl, None);
-                (o, sl, d)
+            crate::catalogs::parallel_map(natives, MAX_NATIVE, |(o, s)| {
+                let d = detail(gh, &o, &s, None);
+                (o, s, d)
             })
         });
-        crate::catalogs::ensure_repos_indexed(ctx, &repos);
+        emit(mirrors);
         h.join().unwrap_or_default()
     });
-    let mut n = 0;
-    for (src, name, installs) in mirrors {
-        if let Some(id) = index::find_in_source(ctx, &src.to_string(), &name)? {
-            index::add_listing(ctx, &id, CATALOG, installs, None)?;
-            n += 1;
-        }
-    }
+    let mut hosted = Found::default();
     for (owner, slug, d) in details {
         match d {
-            Ok(Some(d)) => match index_native(ctx, &owner, &slug, d) {
-                Ok(_) => n += 1,
-                Err(e) => ctx.ui.warn(&format!("ClawHub {owner}/{slug}: {e:#}")),
-            },
+            Ok(Some(detail)) => hosted.natives.push(Native { owner, slug, detail }),
             Ok(None) => {} // GitHub-backed: resolved to its repository on install
-            Err(e) => ctx.ui.warn(&format!("ClawHub {owner}/{slug}: {e:#}")),
+            Err(e) => hosted.warnings.push(format!("ClawHub {owner}/{slug}: {e:#}")),
         }
     }
-    crate::catalogs::live_mark(ctx, CATALOG, q)?;
-    Ok(n)
+    emit(hosted);
+    Ok(())
 }
 
 pub enum Download {

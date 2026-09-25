@@ -2,10 +2,9 @@
 //! repositories (`sourceUrl` + `path`), so they feed the git index; Tessl's own quality,
 //! security and eval scores are kept as listing signals.
 
-use crate::ctx::Ctx;
-use crate::github::encode_query;
+use crate::github::{GitHub, encode_query};
 use crate::id::{SkillId, parse_source_input};
-use crate::index;
+use crate::live::{Found, Listing, Target};
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
@@ -87,30 +86,21 @@ fn pointers_from(resp: Response) -> Vec<Pointer> {
     out
 }
 
-/// Live search: index the pointed-to skills and attach Tessl signals.
-pub fn live_search(ctx: &Ctx, q: &str, max: usize) -> Result<usize> {
-    if ctx.opts.offline || q.trim().is_empty() || crate::catalogs::live_fresh(ctx, CATALOG, q)? {
-        return Ok(0);
-    }
+/// Live query (network only): pointed-to skill directories plus Tessl signals.
+pub fn query(gh: &GitHub, q: &str, max: usize, emit: &mut dyn FnMut(Found)) -> Result<()> {
     let url = format!("{}/experimental/search?q={}&page%5Bsize%5D={max}", base_url(), encode_query(q));
-    let r = ctx.gh.get_public(&url)?;
+    let r = gh.get_public(&url)?;
     if r.status != 200 {
         bail!("Tessl search returned {}", r.status);
     }
     let resp: Response = serde_json::from_slice(&r.body)?;
-    let pointers = pointers_from(resp);
-    let jobs: Vec<(crate::id::SourceId, String)> = pointers.iter().map(|p| (p.id.source.clone(), p.id.path.clone())).collect();
-    crate::catalogs::ensure_pointers_indexed(ctx, &jobs);
-    let mut n = 0;
-    for p in pointers {
-        let id = p.id.to_string();
-        if index::skill_exists(ctx, &id)? {
-            index::add_listing_signals(ctx, &id, CATALOG, None, &p.signals)?;
-            n += 1;
-        }
+    let mut f = Found::default();
+    for p in pointers_from(resp) {
+        f.dirs.push((p.id.source.clone(), p.id.path.clone()));
+        f.listings.push(Listing { target: Target::Id(p.id.to_string()), installs: None, signals: Some(p.signals) });
     }
-    crate::catalogs::live_mark(ctx, CATALOG, q)?;
-    Ok(n)
+    emit(f);
+    Ok(())
 }
 
 #[cfg(test)]

@@ -21,6 +21,10 @@ async function main(): Promise<void> {
     TRICKS_HOST_MAP: `github.com=${path.join(root, "fixtures")}`,
     TRICKS_NO_GH: "1",
     TRICKS_NO_API: "1",
+    // Never reach the real catalogs from tests.
+    TRICKS_SKILLS_SH_URL: "http://127.0.0.1:9",
+    TRICKS_TESSL_URL: "http://127.0.0.1:9",
+    TRICKS_CLAWHUB_URL: "http://127.0.0.1:9",
     GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@e", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@e",
   };
   fs.mkdirSync(path.join(root, "config"), { recursive: true });
@@ -32,6 +36,16 @@ async function main(): Promise<void> {
   sh(up, "git", ["init", "-q", "-b", "main"], env);
   sh(up, "git", ["add", "-A"], env);
   sh(up, "git", ["commit", "-qm", "init"], env);
+  sh(root, bin, ["catalog", "add", "acme/skills"], env);
+  // Publish target: a bare remote (it accepts pushes), seeded with a README.
+  const pub = path.join(root, "pub.git");
+  sh(root, "git", ["init", "-q", "--bare", "-b", "main", pub], env);
+  const seed = path.join(root, "seed");
+  sh(root, "git", ["clone", "-q", pub, seed], env);
+  fs.writeFileSync(path.join(seed, "README.md"), "published skills\n");
+  sh(seed, "git", ["add", "-A"], env);
+  sh(seed, "git", ["commit", "-qm", "readme"], env);
+  sh(seed, "git", ["push", "-q", "origin", "HEAD:main"], env);
   // Source repo with one vendored skill and one broken skill.
   const ws = path.join(root, "ws");
   fs.mkdirSync(ws);
@@ -39,6 +53,7 @@ async function main(): Promise<void> {
   sh(ws, bin, ["init"], env);
   sh(ws, bin, ["vendor", "acme/skills//hello"], env);
   sh(ws, bin, ["new", "broken", "--description", "Short."], env);
+  fs.appendFileSync(path.join(ws, "tricks.toml"), '\n[publish.targets.public]\nrepo = "../pub.git"\nskills = ["hello"]\n');
   fs.mkdirSync(path.join(ws, ".vscode"));
   fs.writeFileSync(path.join(ws, ".vscode/settings.json"), JSON.stringify({ "tricks.path": bin }));
   sh(ws, "git", ["add", "-A"], env);

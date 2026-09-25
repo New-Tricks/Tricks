@@ -114,8 +114,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   const reg = (id: string, fn: (...args: any[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
   reg("tricks.refresh", refreshAll);
-  reg("tricks.search", async () => {
-    const q = await vscode.window.showInputBox({ prompt: "Search skills" });
+  reg("tricks.search", async (query?: string) => {
+    const q = typeof query === "string" ? query : await vscode.window.showInputBox({ prompt: "Search skills" });
     if (q === undefined) return;
     await vscode.commands.executeCommand("tricks.discover.focus");
     discover.search(q);
@@ -486,7 +486,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     if (!context.extensionMode || context.extensionMode !== vscode.ExtensionMode.Test) offerAgentSkill();
   });
   // Exposed for integration tests.
-  return { client, model, lint, refreshAll, status };
+  return { client, model, lint, refreshAll, status, discover, PublishPanel };
 }
 
 export function deactivate(): void {

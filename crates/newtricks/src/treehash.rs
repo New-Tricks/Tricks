@@ -41,7 +41,7 @@ fn hash_dir(dir: &Path) -> Result<Option<[u8; 20]>> {
         return Ok(None);
     }
     // Git orders tree entries by name, comparing directories as if suffixed with '/'.
-    entries.sort_by(|a, b| sort_key(&a.0, a.1).cmp(&sort_key(&b.0, b.1)));
+    entries.sort_by_key(|a| sort_key(&a.0, a.1));
     let mut body = Vec::new();
     for (name, mode, h) in &entries {
         body.extend_from_slice(mode.as_bytes());

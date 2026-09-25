@@ -104,6 +104,10 @@ export class TricksClient implements vscode.Disposable {
    * Call a method. If the core needs confirmation, show a modal with its details
    * and re-send with `yes: true` when the user agrees.
    */
+  /** Asks the user to confirm an operation; replaceable in tests. */
+  confirm: (prompt: string, details: string) => Thenable<boolean> = async (prompt, details) =>
+    (await vscode.window.showWarningMessage(prompt, { modal: true, detail: details }, "Continue")) === "Continue";
+
   async request<T = any>(method: string, params: any = {}, opts: { confirm?: boolean } = { confirm: true }): Promise<T> {
     await this.start();
     try {
@@ -113,8 +117,7 @@ export class TricksClient implements vscode.Disposable {
     } catch (e) {
       if (e instanceof RpcFailure && e.needsConfirmation && opts.confirm !== false) {
         const details = (e.error.data?.details ?? []).join("\n");
-        const choice = await vscode.window.showWarningMessage(e.error.data?.prompt ?? e.message, { modal: true, detail: details }, "Continue");
-        if (choice !== "Continue") throw new Cancelled();
+        if (!(await this.confirm(e.error.data?.prompt ?? e.message, details))) throw new Cancelled();
         const r = await this.rawRequest(method, { ...params, yes: true });
         this.logMessages(r);
         return r;
