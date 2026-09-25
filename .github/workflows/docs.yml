@@ -1,0 +1,59 @@
+name: Docs
+
+# The documentation site (docs/, Astro Starlight) on GitHub Pages:
+# https://new-tricks.github.io/tricks/
+# Pull requests build it; pushes to main build and deploy it. The command and lint rule
+# reference is generated from the tricks binary built here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # "last updated" dates come from git history
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p newtricks
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: docs
+      - run: npm run build
+        working-directory: docs
+        env:
+          TRICKS_BIN: ${{ github.workspace }}/target/debug/tricks
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: docs/dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

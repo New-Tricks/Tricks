@@ -2,7 +2,7 @@
 
 **Teach your agents new tricks.** New Tricks (`tricks`) is the design-time workbench for agent skills. You work in a **source repo** — a git repository holding your own skills and customized copies of upstream skills — and New Tricks helps you find prior art across fragmented catalogs, keep vendored skills merging upstream improvements, try drafts and variants with real agents, lint them, and publish a repository that APM, `npx skills`, Claude plugin marketplaces, Copilot, Codex and Cursor can all install.
 
-New Tricks does not manage the skills installed on your machine: that is what [APM](https://github.com/microsoft/apm), `npx skills` and plugin marketplaces are for, and what your published repository feeds. See [SPEC.md](SPEC.md) for the full design.
+New Tricks does not manage the skills installed on your machine: that is what [APM](https://github.com/microsoft/apm), `npx skills` and plugin marketplaces are for, and what your published repository feeds. **Documentation: [new-tricks.github.io/tricks](https://new-tricks.github.io/tricks/)** (sources in [`docs/`](docs/)). See [SPEC.md](SPEC.md) for the full design.
 
 ```
 discover ─► create / vendor ─► edit on a branch ─► link & try with agents ─► merge ─► lint ─► publish
@@ -56,7 +56,7 @@ tricks merge changelog-writer@terse [--pr] [--whole-branch]   # bring it back (o
 # Keep up with upstream
 tricks outdated [--diff]                              # what changed upstream, with a risk summary
 tricks update skill-creator [--dry-run]               # 3-way merge into yours, left uncommitted
-tricks update --continue | --abort                      # after resolving conflicts
+tricks update --continue | --abort                    # after resolving conflicts
 tricks diff skill-creator base..                      # what did I change?
 tricks contribute skill-creator                       # offer your change upstream as a pull request
 

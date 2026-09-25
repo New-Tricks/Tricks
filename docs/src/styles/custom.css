@@ -1,0 +1,11 @@
+/* Accent: a warm amber, for the "new tricks" spark. */
+:root {
+	--sl-color-accent-low: #3a2a0c;
+	--sl-color-accent: #d68a12;
+	--sl-color-accent-high: #f7d9a6;
+}
+:root[data-theme='light'] {
+	--sl-color-accent-low: #fbe9c9;
+	--sl-color-accent: #a86400;
+	--sl-color-accent-high: #4a2c00;
+}

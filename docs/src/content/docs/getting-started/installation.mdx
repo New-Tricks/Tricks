@@ -1,0 +1,193 @@
+---
+title: Installation
+description: Install the tricks command with Homebrew, the VS Code extension, a release binary or from source, then check your setup with tricks doctor.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+New Tricks is a single binary, `tricks`, for macOS, Linux and Windows. Install it one of these ways, then run [`tricks doctor`](#check-your-setup) to check everything is in place.
+
+## Requirements
+
+- **git** on your `PATH`. New Tricks shells out to your system git for everything, so it uses your git configuration and credential helpers.
+- **GitHub credentials** (recommended). Search, `info` and vendoring work anonymously for public repositories, but anonymous use is limited to 60 GitHub API requests an hour and skips GitHub code search. See [GitHub credentials](#github-credentials).
+- **The GitHub CLI** `gh` (optional). New Tricks borrows its token, and uses it to open pull requests for `merge --pr`, `publish --pr` and `contribute`.
+
+## Install
+
+<Tabs syncKey="install">
+<TabItem label="Homebrew">
+
+On macOS or Linux with [Homebrew](https://brew.sh):
+
+```bash
+brew install new-tricks/tap/tricks
+```
+
+</TabItem>
+<TabItem label="VS Code extension">
+
+Install **New Tricks** (`newtricks.new-tricks`) from the VS Code Marketplace, or from Open VSX for Cursor, Windsurf and VSCodium. Search for "New Tricks" in the Extensions view, or:
+
+```bash
+code --install-extension newtricks.new-tricks
+```
+
+The extension bundles the `tricks` binary for your platform and uses it automatically. The bundled binary is for the extension; to run `tricks` in a terminal, install the CLI another way as well. The extension setting `tricks.path` points it at a different binary. See [VS Code extension](/tricks/vscode/).
+
+</TabItem>
+<TabItem label="Release binary">
+
+Each [GitHub release](https://github.com/new-tricks/tricks/releases) has a `tricks-<target>.tar.gz` archive and a matching `.sha256` checksum for each platform:
+
+| Platform | Target |
+|---|---|
+| macOS, Apple silicon | `aarch64-apple-darwin` |
+| macOS, Intel | `x86_64-apple-darwin` |
+| Linux, x64 | `x86_64-unknown-linux-gnu` |
+| Linux, arm64 | `aarch64-unknown-linux-gnu` |
+| Windows, x64 | `x86_64-pc-windows-msvc` |
+| Windows, arm64 | `aarch64-pc-windows-msvc` |
+
+On macOS and Linux, download, verify, and put `tricks` in a directory on your `PATH` that you can write to (so [`tricks upgrade`](#upgrading) can replace it later):
+
+```bash
+T=aarch64-apple-darwin                                   # your target from the table
+URL=https://github.com/new-tricks/tricks/releases/latest/download
+curl -fLO "$URL/tricks-$T.tar.gz"
+curl -fLO "$URL/tricks-$T.tar.gz.sha256"
+shasum -a 256 -c "tricks-$T.tar.gz.sha256"               # Linux: sha256sum -c
+tar -xzf "tricks-$T.tar.gz"                              # tricks, LICENSE, README.md
+mkdir -p ~/.local/bin && mv tricks ~/.local/bin/
+```
+
+Make sure `~/.local/bin` is on your `PATH`.
+
+:::note[macOS Gatekeeper]
+If you downloaded the archive with a browser and macOS refuses to run `tricks`, remove the quarantine attribute: `xattr -d com.apple.quarantine ~/.local/bin/tricks`. Downloads made with `curl` are not quarantined.
+:::
+
+On Windows, in PowerShell (Windows 10 and later include `tar`):
+
+```powershell
+$T   = "x86_64-pc-windows-msvc"                          # or aarch64-pc-windows-msvc
+$URL = "https://github.com/new-tricks/tricks/releases/latest/download"
+Invoke-WebRequest "$URL/tricks-$T.tar.gz" -OutFile "tricks-$T.tar.gz"
+Invoke-WebRequest "$URL/tricks-$T.tar.gz.sha256" -OutFile "tricks-$T.tar.gz.sha256"
+$expected = (Get-Content "tricks-$T.tar.gz.sha256").Split(" ")[0]
+$actual   = (Get-FileHash "tricks-$T.tar.gz" -Algorithm SHA256).Hash
+if ($actual -ne $expected) { throw "checksum mismatch" }
+tar -xzf "tricks-$T.tar.gz"
+$Dir = "$env:LOCALAPPDATA\Programs\tricks"
+New-Item -ItemType Directory -Force $Dir | Out-Null
+Move-Item -Force tricks.exe $Dir
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$Dir", "User")
+```
+
+Open a new terminal so the updated `PATH` takes effect.
+
+</TabItem>
+<TabItem label="From source">
+
+With a Rust toolchain (1.89 or later) and git:
+
+```bash
+git clone https://github.com/new-tricks/tricks
+cd tricks
+cargo install --path crates/newtricks                    # installs tricks into ~/.cargo/bin
+```
+
+</TabItem>
+</Tabs>
+
+Check the installed version:
+
+```bash
+tricks --version
+```
+
+```text
+tricks 0.6.0
+```
+
+## GitHub credentials
+
+New Tricks borrows credentials and stores none. For the GitHub API it uses the first of:
+
+1. `TRICKS_GITHUB_TOKEN`, then `GITHUB_TOKEN`
+2. `gh auth token --hostname <host>`, which also covers GitHub Enterprise hosts
+3. In VS Code, the editor's GitHub session, passed to the binary in memory
+4. Otherwise anonymous, read-only access to public sources
+
+The simplest setup is to sign in to the GitHub CLI once:
+
+```bash
+gh auth login
+```
+
+A token needs the `repo` scope for private repositories, pull requests and publish targets, and `read:org` for the "your org" trust signal in search. Git operations (clone, fetch, push) go through your normal git credential helpers or SSH keys, not this token.
+
+## Check your setup
+
+[`tricks doctor`](/tricks/reference/commands/doctor/) checks git, credentials, directories, agents and link health:
+
+```bash
+tricks doctor
+```
+
+```text
+New Tricks 0.6.0
+  ✓ git                      git version 2.55.0
+  ✓ gh                       GitHub CLI found
+  ✓ github.com credentials   token from `gh auth token`
+  ✓ identity                 you (orgs: acme)
+  ✓ API rate limit           4766/5000 remaining
+  ✓ config                   ~/.config/newtricks
+  ✓ data                     ~/Library/Application Support/newtricks
+  ✓ store                    0 revision(s)
+  ✓ index                    0 skill(s) indexed
+  ✓ agent claude             user ~/.claude/skills (not created yet), project .claude/skills; link mode; tested 2.1.280
+  ✓ agent codex              user ~/.agents/skills (not created yet), project .agents/skills; link mode; tested 0.140.0
+  ✓ agent cursor             user ~/.cursor/skills (not created yet), project .cursor/skills; link mode; tested 3.11.19
+  ✓ agent copilot            user ~/.copilot/skills (not created yet), project .github/skills; copy mode; tested VS Code 1.128.1
+  ✓ operations               no interrupted operations
+  ✓ placements               all healthy
+```
+
+Without credentials, the credentials line reads ``anonymous: public sources only, 60 API requests/hour, no GitHub code search. Run `gh auth login`.`` Once you have source repos, `doctor` also checks that each registered one still has its `tricks.toml`. The agent lines show where each agent's skills go and whether links or copies are used; see [Agents](/tricks/concepts/agents/).
+
+## Upgrading
+
+How you upgrade depends on how you installed:
+
+| Installed with | Upgrade with |
+|---|---|
+| Homebrew | `brew upgrade tricks` |
+| VS Code extension | Updating the extension updates its bundled binary |
+| Release binary or other standalone install | `tricks upgrade` |
+| From source | `git pull` and `cargo install --path crates/newtricks` again |
+
+[`tricks upgrade`](/tricks/reference/commands/upgrade/) downloads the latest release for your platform from GitHub, verifies its SHA-256 checksum, and replaces the running binary in place. `tricks upgrade --check` only reports whether a newer release exists:
+
+```bash
+tricks upgrade --check
+```
+
+```text
+New Tricks 0.6.0 is up to date
+```
+
+`tricks upgrade` recognizes the other install methods and tells you what to do instead of overwriting a managed binary. For a Homebrew install it prints ``installed with Homebrew: run `brew upgrade tricks` ``; for the binary bundled with the extension, `bundled with the VS Code extension: it updates with the extension`.
+
+## Where New Tricks keeps its files
+
+| What | Where |
+|---|---|
+| User config: settings, catalogs, registered source repos | `~/.config/newtricks/tricks.toml` (`%APPDATA%\newtricks\tricks.toml` on Windows) |
+| Data: store, upstream mirrors, publish clones, search index | `~/Library/Application Support/newtricks` (macOS), `~/.local/share/newtricks` (Linux), `%LOCALAPPDATA%\newtricks` (Windows) |
+
+The user config is written on first run with the default settings and the recommended catalogs. Environment variables such as `TRICKS_CONFIG_DIR` and `TRICKS_DATA_DIR` move these locations. See the [configuration reference](/tricks/reference/configuration/) for every file, key and variable.
+
+## Next steps
+
+Follow the [quick start](/tricks/getting-started/quick-start/) to create a source repo and test a skill with your agents.
