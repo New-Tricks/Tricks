@@ -30,18 +30,18 @@ pub fn status(ctx: &Ctx) -> Result<Status> {
 
 fn bundled_tree() -> Result<String> {
     let tmp = tempfile::tempdir()?;
-    std::fs::write(tmp.path().join("SKILL.md"), crate::workspace::AGENT_SKILL)?;
+    std::fs::write(tmp.path().join("SKILL.md"), crate::source_repo::AGENT_SKILL)?;
     Ok(crate::treehash::tree_hash(tmp.path())?.unwrap_or_default())
 }
 
 pub fn install(ctx: &Ctx, agent_names: &[String]) -> Result<Vec<String>> {
     let sel: Vec<&'static Agent> = if agent_names.is_empty() {
-        crate::workbench::default_agents(&crate::workbench::load_manifest(ctx)?)?
+        crate::user::default_agents(&crate::user::load_manifest(ctx)?)?
     } else {
         agents::parse_list(agent_names)?
     };
     mark_offered(ctx)?;
-    crate::workspace::install_agent_skill(ctx, &sel, &Scope::Global)
+    crate::source_repo::install_agent_skill(ctx, &sel, &Scope::Global)
 }
 
 pub fn remove(ctx: &Ctx) -> Result<Vec<String>> {
@@ -72,7 +72,7 @@ pub fn refresh_if_outdated(ctx: &Ctx) -> Result<usize> {
     let mut n = 0;
     for p in ctx.state.placements("WHERE skill=?1", &[&KEY])? {
         if let Ok(a) = agents::get(&p.agent) {
-            n += crate::workspace::install_agent_skill(ctx, &[a], &Scope::from_key(&p.scope))?.len();
+            n += crate::source_repo::install_agent_skill(ctx, &[a], &Scope::from_key(&p.scope))?.len();
         }
     }
     Ok(n)

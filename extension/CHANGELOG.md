@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Terminology: the Workspace view is now **Source Repo**, workbench skills are **user skills**, and search sources are **catalogs**. Command ids changed accordingly (`tricks.initSourceRepo`, `tricks.userUpdate`); rebind any custom keybindings.
+- Publish panel: choose between pushing to the target and opening a pull request (one is required).
+
 ## 0.1.0
 
 - Discover: federated, faceted skill search with trust, licence and risk signals.

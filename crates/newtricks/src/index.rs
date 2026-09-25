@@ -339,10 +339,10 @@ pub fn fts_query(q: &str) -> Option<String> {
 }
 
 pub fn search(ctx: &Ctx, query: &str, f: &Filters, limit: usize) -> Result<Vec<SearchResult>> {
-    let identity = crate::sources::cached_identity(ctx, "github.com");
-    let starred = crate::sources::cached_starred(ctx, "github.com");
-    let installed: BTreeSet<String> = crate::workbench::installed_ids(ctx).unwrap_or_default();
-    let vendored: BTreeSet<String> = crate::workspace::vendored_upstreams(ctx).unwrap_or_default();
+    let identity = crate::catalogs::cached_identity(ctx, "github.com");
+    let starred = crate::catalogs::cached_starred(ctx, "github.com");
+    let installed: BTreeSet<String> = crate::user::installed_ids(ctx).unwrap_or_default();
+    let vendored: BTreeSet<String> = crate::source_repo::vendored_upstreams(ctx).unwrap_or_default();
     let c = &ctx.state.conn;
 
     let mut rows: Vec<(String, f64)> = Vec::new();

@@ -25,10 +25,10 @@ impl Paths {
         Ok(Paths { config_dir, data_dir, home })
     }
 
-    pub fn workbench_manifest(&self) -> PathBuf {
+    pub fn user_manifest(&self) -> PathBuf {
         self.config_dir.join("tricks.toml")
     }
-    pub fn workbench_lock(&self) -> PathBuf {
+    pub fn user_lock(&self) -> PathBuf {
         self.config_dir.join("tricks.lock")
     }
     pub fn store(&self) -> PathBuf {
@@ -103,7 +103,7 @@ fn default_data_dir(home: &Path) -> PathBuf {
     }
 }
 
-/// Short stable hash of a path, used to namespace per-workspace data.
+/// Short stable hash of a path, used to namespace per-source-repo data.
 pub fn path_key(p: &Path) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();

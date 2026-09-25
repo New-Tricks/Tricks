@@ -1,8 +1,8 @@
-//! Workspace authoring (spec §10): vendoring with a recorded base, upstream merges left
+//! SourceRepo authoring (spec §10): vendoring with a recorded base, upstream merges left
 //! uncommitted for review, branch experiments via worktrees, and dev deployments.
 
 use crate::agents::{self, Agent};
-use crate::config::{self, LicenseOverride, Policy, WorkFile, WorkspaceLock, WorkspaceManifest, WsLocked, WsSkill};
+use crate::config::{self, LicenseOverride, Policy, RepoLocked, RepoSkill, SourceRepoLock, SourceRepoManifest, WorkFile};
 use crate::ctx::Ctx;
 use crate::deploy::{self, PlaceRequest, Scope};
 use crate::git::{self, Mirror, git};
@@ -21,37 +21,37 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize)]
-pub struct Workspace {
+pub struct SourceRepo {
     pub root: PathBuf,
     pub name: String,
     #[serde(skip)]
-    pub manifest: WorkspaceManifest,
+    pub manifest: SourceRepoManifest,
     #[serde(skip)]
-    pub lock: WorkspaceLock,
+    pub lock: SourceRepoLock,
 }
 
-impl Workspace {
-    pub fn open(root: &Path) -> Result<Workspace> {
+impl SourceRepo {
+    pub fn open(root: &Path) -> Result<SourceRepo> {
         let root = crate::paths::canon(root).unwrap_or(root.to_path_buf());
-        let manifest = WorkspaceManifest::load(&root)?;
-        let lock = WorkspaceLock::load(&root)?;
+        let manifest = SourceRepoManifest::load(&root)?;
+        let lock = SourceRepoLock::load(&root)?;
         let name = manifest
-            .workspace
+            .source_repo
             .name
             .clone()
-            .unwrap_or_else(|| root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "workspace".into()));
-        Ok(Workspace { root, name, manifest, lock })
+            .unwrap_or_else(|| root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "skills".into()));
+        Ok(SourceRepo { root, name, manifest, lock })
     }
 
     pub fn reload(&mut self) -> Result<()> {
-        *self = Workspace::open(&self.root)?;
+        *self = SourceRepo::open(&self.root)?;
         Ok(())
     }
 
-    pub fn skill(&self, name: &str) -> Result<&WsSkill> {
+    pub fn skill(&self, name: &str) -> Result<&RepoSkill> {
         self.manifest.skills.get(name).with_context(|| {
             format!(
-                "no skill `{name}` in workspace {} (have: {})",
+                "no skill `{name}` in source repo {} (have: {})",
                 self.name,
                 self.manifest.skills.keys().cloned().collect::<Vec<_>>().join(", ")
             )
@@ -71,14 +71,14 @@ impl Workspace {
     }
 
     pub fn agents(&self, ctx: &Ctx) -> Result<Vec<&'static Agent>> {
-        if !self.manifest.workspace.agents.is_empty() {
-            return agents::parse_list(&self.manifest.workspace.agents);
+        if !self.manifest.source_repo.agents.is_empty() {
+            return agents::parse_list(&self.manifest.source_repo.agents);
         }
-        crate::workbench::default_agents(&crate::workbench::load_manifest(ctx)?)
+        crate::user::default_agents(&crate::user::load_manifest(ctx)?)
     }
 
     fn edit_doc<F: FnOnce(&mut toml_edit::DocumentMut) -> Result<()>>(&self, f: F) -> Result<()> {
-        let path = self.root.join(config::WORKSPACE_MANIFEST);
+        let path = self.root.join(config::REPO_MANIFEST);
         let mut doc = config::load_doc(&path)?;
         f(&mut doc)?;
         config::save_doc(&path, &doc)
@@ -100,30 +100,30 @@ impl Workspace {
     }
 }
 
-pub fn current(ctx: &Ctx) -> Result<Option<Workspace>> {
-    match config::find_workspace(&ctx.opts.cwd) {
-        Some(root) => Ok(Some(Workspace::open(&root)?)),
+pub fn current(ctx: &Ctx) -> Result<Option<SourceRepo>> {
+    match config::find_source_repo(&ctx.opts.cwd) {
+        Some(root) => Ok(Some(SourceRepo::open(&root)?)),
         None => Ok(None),
     }
 }
 
-pub fn require(ctx: &Ctx) -> Result<Workspace> {
-    current(ctx)?.context("not inside a New Tricks workspace (run `tricks init` in a git repository)")
+pub fn require(ctx: &Ctx) -> Result<SourceRepo> {
+    current(ctx)?.context("not inside a New Tricks source repo (run `tricks init` in a git repository)")
 }
 
-/// Registered workspaces (workbench manifest) plus the current one.
-pub fn all_workspaces(ctx: &Ctx) -> Result<Vec<Workspace>> {
-    let m = crate::workbench::load_manifest(ctx)?;
-    let mut roots: BTreeSet<PathBuf> = m.workspaces.values().map(|p| ctx.paths.expand(p)).collect();
-    if let Some(r) = config::find_workspace(&ctx.opts.cwd) {
+/// Registered source repos (user config) plus the current one.
+pub fn all_source_repos(ctx: &Ctx) -> Result<Vec<SourceRepo>> {
+    let m = crate::user::load_manifest(ctx)?;
+    let mut roots: BTreeSet<PathBuf> = m.source_repos.values().map(|p| ctx.paths.expand(p)).collect();
+    if let Some(r) = config::find_source_repo(&ctx.opts.cwd) {
         roots.insert(r);
     }
-    Ok(roots.into_iter().filter(|r| r.join(config::WORKSPACE_MANIFEST).is_file()).filter_map(|r| Workspace::open(&r).ok()).collect())
+    Ok(roots.into_iter().filter(|r| r.join(config::REPO_MANIFEST).is_file()).filter_map(|r| SourceRepo::open(&r).ok()).collect())
 }
 
 pub fn vendored_upstreams(ctx: &Ctx) -> Result<BTreeSet<String>> {
     let mut s = BTreeSet::new();
-    for ws in all_workspaces(ctx)? {
+    for ws in all_source_repos(ctx)? {
         for sk in ws.manifest.skills.values() {
             if let Some(u) = &sk.upstream {
                 s.insert(u.clone());
@@ -133,22 +133,22 @@ pub fn vendored_upstreams(ctx: &Ctx) -> Result<BTreeSet<String>> {
     Ok(s)
 }
 
-/// Placement key for a directory inside a workspace skill.
+/// Placement key for a directory inside a source repo skill.
 pub fn skill_key_for_dir(dir: &Path) -> Option<String> {
-    let root = config::find_workspace(dir)?;
-    let ws = Workspace::open(&root).ok()?;
+    let root = config::find_source_repo(dir)?;
+    let ws = SourceRepo::open(&root).ok()?;
     let rel = dir.strip_prefix(&ws.root).ok()?.to_string_lossy().replace('\\', "/");
     ws.manifest.skills.iter().find(|(_, s)| s.path.trim_end_matches('/') == rel).map(|(n, _)| ws.skill_key(n))
 }
 
 // ---------------------------------------------------------------- init
 
-const MANIFEST_TEMPLATE: &str = r#"# New Tricks workspace — https://github.com/new-tricks/tricks
+const MANIFEST_TEMPLATE: &str = r#"# New Tricks source repo: https://github.com/new-tricks/tricks
 # Skills authored or customized here. Vendored skills record their upstream; the base
 # commit lives in tricks.lock.
 
-[workspace]
-# agents = ["claude", "codex"]   # agents for dev deployments (default: workbench setting)
+[source-repo]
+# agents = ["claude", "codex"]   # agents for dev deployments (default: user setting)
 
 [skills]
 
@@ -180,15 +180,15 @@ pub fn init(ctx: &Ctx, name: Option<&str>, agent_skill: bool) -> Result<InitRepo
         }
     };
     let root = crate::paths::canon(&root)?;
-    let manifest = root.join(config::WORKSPACE_MANIFEST);
+    let manifest = root.join(config::REPO_MANIFEST);
     let created = !manifest.exists();
     if created {
         let mut text = MANIFEST_TEMPLATE.to_string();
         if let Some(n) = name {
-            text = text.replace("[workspace]\n", &format!("[workspace]\nname = \"{n}\"\n"));
+            text = text.replace("[source-repo]\n", &format!("[source-repo]\nname = \"{n}\"\n"));
         }
         std::fs::write(&manifest, text)?;
-        WorkspaceLock { version: 1, ..Default::default() }.save(&root)?;
+        SourceRepoLock { version: 1, ..Default::default() }.save(&root)?;
         std::fs::create_dir_all(root.join("skills"))?;
         let gi = root.join(".gitignore");
         let mut g = std::fs::read_to_string(&gi).unwrap_or_default();
@@ -200,20 +200,20 @@ pub fn init(ctx: &Ctx, name: Option<&str>, agent_skill: bool) -> Result<InitRepo
             std::fs::write(&gi, g)?;
         }
     }
-    let ws = Workspace::open(&root)?;
-    // Register in the workbench.
-    let path = ctx.paths.workbench_manifest();
+    let ws = SourceRepo::open(&root)?;
+    // Register in the user config.
+    let path = ctx.paths.user_manifest();
     let mut doc = config::load_doc(&path)?;
-    let m = crate::workbench::load_manifest(ctx)?;
+    let m = crate::user::load_manifest(ctx)?;
     let contracted = ctx.paths.contract(&root);
-    if !m.workspaces.values().any(|p| ctx.paths.expand(p) == root) {
+    if !m.source_repos.values().any(|p| ctx.paths.expand(p) == root) {
         let mut key = ws.name.clone();
         let mut i = 2;
-        while m.workspaces.contains_key(&key) {
+        while m.source_repos.contains_key(&key) {
             key = format!("{}-{i}", ws.name);
             i += 1;
         }
-        config::table_mut(&mut doc, &["workspaces"]).insert(&key, config::str_value(&contracted));
+        config::table_mut(&mut doc, &["source-repos"]).insert(&key, config::str_value(&contracted));
         config::save_doc(&path, &doc)?;
     }
     let mut placed = Vec::new();
@@ -237,7 +237,7 @@ pub fn install_agent_skill(ctx: &Ctx, agents_sel: &[&'static Agent], scope: &Sco
             ctx,
             &PlaceRequest {
                 skill: "bundled:new-tricks".into(),
-                origin: "workbench",
+                origin: "user",
                 agent: a,
                 scope: scope.clone(),
                 name: "new-tricks".into(),
@@ -272,15 +272,15 @@ fn track_for(spec: &SkillSpec, kind: &str, name: &str) -> String {
     }
 }
 
-pub fn vendor(ctx: &Ctx, ws: &Workspace, input: &str, name: Option<&str>, path: Option<&str>) -> Result<VendorReport> {
+pub fn vendor(ctx: &Ctx, ws: &SourceRepo, input: &str, name: Option<&str>, path: Option<&str>) -> Result<VendorReport> {
     let spec = crate::lookup::spec_from_input(ctx, input)?;
     let r = resolve_skill(ctx, &spec, Fetch::IfStale)?;
-    let name = name.map(String::from).unwrap_or_else(|| crate::workbench::placement_name(&r.name, &r.id));
+    let name = name.map(String::from).unwrap_or_else(|| crate::user::placement_name(&r.name, &r.id));
     if !valid_skill_name(&name) {
         bail!("`{name}` is not a valid skill name (lowercase letters, digits and single hyphens)");
     }
     if ws.manifest.skills.contains_key(&name) {
-        bail!("workspace already has a skill named `{name}`");
+        bail!("source repo already has a skill named `{name}`");
     }
     let rel = path.map(|p| p.trim_matches('/').to_string()).unwrap_or_else(|| format!("skills/{name}"));
     let dest = ws.root.join(&rel);
@@ -315,7 +315,7 @@ pub fn vendor(ctx: &Ctx, ws: &Workspace, input: &str, name: Option<&str>, path: 
     let mut lock = ws.lock.clone();
     lock.skills.insert(
         name.clone(),
-        WsLocked {
+        RepoLocked {
             base: Some(r.reference.commit.clone()),
             base_tree: Some(r.tree.clone()),
             upstream_path: None,
@@ -328,7 +328,7 @@ pub fn vendor(ctx: &Ctx, ws: &Workspace, input: &str, name: Option<&str>, path: 
 
 pub fn import(
     ctx: &Ctx,
-    ws: &Workspace,
+    ws: &SourceRepo,
     folder: &str,
     name: Option<&str>,
     upstream: Option<&str>,
@@ -346,14 +346,14 @@ pub fn import(
         bail!("`{name}` is not a valid skill name; pass --name");
     }
     if ws.manifest.skills.contains_key(&name) {
-        bail!("workspace already has a skill named `{name}`");
+        bail!("source repo already has a skill named `{name}`");
     }
     let rel = format!("skills/{name}");
     let dest = ws.root.join(&rel);
     if dest.exists() {
         bail!("{} already exists", dest.display());
     }
-    let mut locked = WsLocked::default();
+    let mut locked = RepoLocked::default();
     let mut upstream_id = None;
     if let Some(u) = upstream {
         let base = base.context("--upstream requires --base <commit> (the upstream revision this copy started from)")?;
@@ -392,12 +392,12 @@ pub fn import(
     })
 }
 
-pub fn new_skill(ws: &Workspace, name: &str, description: Option<&str>) -> Result<VendorReport> {
+pub fn new_skill(ws: &SourceRepo, name: &str, description: Option<&str>) -> Result<VendorReport> {
     if !valid_skill_name(name) {
         bail!("`{name}` is not a valid skill name (lowercase letters, digits and single hyphens; max 64)");
     }
     if ws.manifest.skills.contains_key(name) {
-        bail!("workspace already has a skill named `{name}`");
+        bail!("source repo already has a skill named `{name}`");
     }
     let rel = format!("skills/{name}");
     let dest = ws.root.join(&rel);
@@ -430,7 +430,7 @@ pub fn new_skill(ws: &Workspace, name: &str, description: Option<&str>) -> Resul
 // ---------------------------------------------------------------- upstream updates
 
 #[derive(Debug, Serialize)]
-pub struct WsUpdateItem {
+pub struct RepoUpdateItem {
     pub name: String,
     pub from: Option<String>,
     pub to: Option<String>,
@@ -444,11 +444,11 @@ pub struct WsUpdateItem {
 }
 
 #[derive(Debug, Serialize, Default)]
-pub struct WsUpdateReport {
-    pub items: Vec<WsUpdateItem>,
+pub struct RepoUpdateReport {
+    pub items: Vec<RepoUpdateItem>,
 }
 
-fn upstream_of(ws: &Workspace, name: &str) -> Result<Option<(SkillId, String)>> {
+fn upstream_of(ws: &SourceRepo, name: &str) -> Result<Option<(SkillId, String)>> {
     let s = ws.skill(name)?;
     let Some(u) = &s.upstream else { return Ok(None) };
     let mut id = SkillId::parse_canonical(u)?;
@@ -466,8 +466,8 @@ fn upstream_of(ws: &Workspace, name: &str) -> Result<Option<(SkillId, String)>> 
     Ok(Some((id, req)))
 }
 
-pub fn outdated(ctx: &Ctx, ws: &Workspace) -> Result<WsUpdateReport> {
-    let mut rep = WsUpdateReport::default();
+pub fn outdated(ctx: &Ctx, ws: &SourceRepo) -> Result<RepoUpdateReport> {
+    let mut rep = RepoUpdateReport::default();
     for (name, s) in &ws.manifest.skills {
         if s.upstream.is_none() || s.update == Some(Policy::Paused) {
             continue;
@@ -478,11 +478,9 @@ pub fn outdated(ctx: &Ctx, ws: &Workspace) -> Result<WsUpdateReport> {
             Ok(u) => {
                 let changed = base.as_deref() != Some(u.reference.commit.as_str())
                     && ws.lock.skills.get(name).and_then(|l| l.base_tree.clone()).as_deref() != Some(u.tree.as_str());
-                let incoming = base
-                    .as_deref()
-                    .map(|b| crate::workbench::file_changes(&u.mirror.dir, b, &u.reference.commit, &id.path))
-                    .unwrap_or_default();
-                rep.items.push(WsUpdateItem {
+                let incoming =
+                    base.as_deref().map(|b| crate::user::file_changes(&u.mirror.dir, b, &u.reference.commit, &id.path)).unwrap_or_default();
+                rep.items.push(RepoUpdateItem {
                     name: name.clone(),
                     from: base,
                     to: Some(u.reference.commit.clone()),
@@ -494,7 +492,7 @@ pub fn outdated(ctx: &Ctx, ws: &Workspace) -> Result<WsUpdateReport> {
                     message: None,
                 });
             }
-            Err(e) => rep.items.push(WsUpdateItem {
+            Err(e) => rep.items.push(RepoUpdateItem {
                 name: name.clone(),
                 from: base,
                 to: None,
@@ -510,19 +508,19 @@ pub fn outdated(ctx: &Ctx, ws: &Workspace) -> Result<WsUpdateReport> {
     Ok(rep)
 }
 
-/// Exclusive per-workspace lock for operations that rewrite skill directories.
-pub fn workspace_lock(ctx: &Ctx, ws: &Workspace) -> Result<std::fs::File> {
+/// Exclusive per-source-repo lock for operations that rewrite skill directories.
+pub fn source_repo_lock(ctx: &Ctx, ws: &SourceRepo) -> Result<std::fs::File> {
     let f = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(ctx.paths.locks().join(format!("ws-{}.lock", ws.key())))?;
-    f.lock().context("locking workspace")?;
+    f.lock().context("locking source repo")?;
     Ok(f)
 }
 
-pub fn update(ctx: &Ctx, ws: &Workspace, only: Option<&str>, cont: bool, abort: bool) -> Result<WsUpdateReport> {
-    let _lock = workspace_lock(ctx, ws)?;
+pub fn update(ctx: &Ctx, ws: &SourceRepo, only: Option<&str>, cont: bool, abort: bool) -> Result<RepoUpdateReport> {
+    let _lock = source_repo_lock(ctx, ws)?;
     if cont || abort {
         let names: Vec<String> = match only {
             Some(n) => vec![n.to_string()],
@@ -531,7 +529,7 @@ pub fn update(ctx: &Ctx, ws: &Workspace, only: Option<&str>, cont: bool, abort: 
         if names.is_empty() {
             bail!("no upstream merge in progress");
         }
-        let mut rep = WsUpdateReport::default();
+        let mut rep = RepoUpdateReport::default();
         for n in names {
             rep.items.push(if abort { abort_merge(ctx, ws, &n)? } else { continue_merge(ctx, ws, &n)? });
         }
@@ -553,11 +551,11 @@ pub fn update(ctx: &Ctx, ws: &Workspace, only: Option<&str>, cont: bool, abort: 
             .map(|(n, _)| n.clone())
             .collect(),
     };
-    let mut rep = WsUpdateReport::default();
+    let mut rep = RepoUpdateReport::default();
     for n in names {
         let item = match update_one(ctx, ws, &n) {
             Ok(i) => i,
-            Err(e) => WsUpdateItem {
+            Err(e) => RepoUpdateItem {
                 name: n.clone(),
                 from: None,
                 to: None,
@@ -578,9 +576,9 @@ pub fn update(ctx: &Ctx, ws: &Workspace, only: Option<&str>, cont: bool, abort: 
     Ok(rep)
 }
 
-fn update_one(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
+fn update_one(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<RepoUpdateItem> {
     let Some((mut id, req)) = upstream_of(ws, name)? else {
-        return Ok(WsUpdateItem {
+        return Ok(RepoUpdateItem {
             name: name.into(),
             from: None,
             to: None,
@@ -620,7 +618,7 @@ fn update_one(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
         },
     };
     if u_ref.commit == base || Some(&u_tree) == locked.base_tree.as_ref() {
-        return Ok(WsUpdateItem {
+        return Ok(RepoUpdateItem {
             name: name.into(),
             from: Some(base.clone()),
             to: Some(u_ref.commit.clone()),
@@ -640,7 +638,7 @@ fn update_one(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
     let b_dir = store::from_mirror(ctx, &mirror, &base, &base_path, &b_tree)?;
     let u_dir = store::from_mirror(ctx, &mirror, &u_ref.commit, &id.path, &u_tree)?;
     let risk = RiskReport::scan_dir(&u_dir).diff_from(&RiskReport::scan_dir(&b_dir));
-    let incoming = crate::workbench::file_changes(&mirror.dir, &base, &u_ref.commit, &id.path);
+    let incoming = crate::user::file_changes(&mirror.dir, &base, &u_ref.commit, &id.path);
 
     // Keep agents on the committed version while the working tree is being merged.
     freeze_dev_placements(ctx, ws, name)?;
@@ -662,7 +660,7 @@ fn update_one(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
         if let Some(r) = &renamed {
             ctx.ui.info(&format!("upstream moved `{base_path}` to `{r}`; recorded in tricks.lock"));
         }
-        Ok(WsUpdateItem {
+        Ok(RepoUpdateItem {
             name: name.into(),
             from: Some(base),
             to: Some(u_ref.commit.clone()),
@@ -680,7 +678,7 @@ fn update_one(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
             "INSERT OR REPLACE INTO merges(workspace, skill, target_commit, target_tree, target_path, backup, conflicts, at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![ws.root.to_string_lossy(), name, u_ref.commit, u_tree, renamed, backup.to_string_lossy(), serde_json::to_string(&outcome.conflicts)?, now()],
         )?;
-        Ok(WsUpdateItem {
+        Ok(RepoUpdateItem {
             name: name.into(),
             from: Some(base),
             to: Some(u_ref.commit.clone()),
@@ -694,7 +692,7 @@ fn update_one(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
     }
 }
 
-pub fn pending_merges(ctx: &Ctx, ws: &Workspace) -> Result<Vec<String>> {
+pub fn pending_merges(ctx: &Ctx, ws: &SourceRepo) -> Result<Vec<String>> {
     let mut st = ctx.state.conn.prepare("SELECT skill FROM merges WHERE workspace=?1 ORDER BY at")?;
     let v = st.query_map([ws.root.to_string_lossy()], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
     Ok(v)
@@ -710,7 +708,7 @@ pub struct MergeState {
     pub conflicts: Vec<Conflict>,
 }
 
-pub fn merge_state(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<Option<MergeState>> {
+pub fn merge_state(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<Option<MergeState>> {
     Ok(ctx
         .state
         .conn
@@ -731,7 +729,7 @@ pub fn merge_state(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<Option<Merge
         .optional()?)
 }
 
-fn continue_merge(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
+fn continue_merge(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<RepoUpdateItem> {
     let st = merge_state(ctx, ws, name)?.with_context(|| format!("no merge in progress for `{name}`"))?;
     let dir = ws.skill_dir(name)?;
     let left = merge::unresolved(&dir, &st.conflicts);
@@ -749,7 +747,7 @@ fn continue_merge(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem>
     lock.save(&ws.root)?;
     ctx.state.conn.execute("DELETE FROM merges WHERE workspace=?1 AND skill=?2", params![ws.root.to_string_lossy(), name])?;
     let _ = store::remove_dir_force(Path::new(&st.backup));
-    Ok(WsUpdateItem {
+    Ok(RepoUpdateItem {
         name: name.into(),
         from,
         to: Some(st.target_commit),
@@ -762,7 +760,7 @@ fn continue_merge(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem>
     })
 }
 
-fn abort_merge(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
+fn abort_merge(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<RepoUpdateItem> {
     let st = merge_state(ctx, ws, name)?.with_context(|| format!("no merge in progress for `{name}`"))?;
     let dir = ws.skill_dir(name)?;
     let backup = PathBuf::from(&st.backup);
@@ -775,7 +773,7 @@ fn abort_merge(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
     ctx.state.conn.execute("DELETE FROM merges WHERE workspace=?1 AND skill=?2", params![ws.root.to_string_lossy(), name])?;
     ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [snapshot_key(ws, name)])?;
     redeploy(ctx, ws, name, None)?;
-    Ok(WsUpdateItem {
+    Ok(RepoUpdateItem {
         name: name.into(),
         from: None,
         to: None,
@@ -791,7 +789,7 @@ fn abort_merge(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<WsUpdateItem> {
 // ---------------------------------------------------------------- variants, edit, commit
 
 /// Active variant (branch) for a skill: local override, then manifest `use`.
-pub fn active_variant(ws: &Workspace, name: &str) -> Result<Option<String>> {
+pub fn active_variant(ws: &SourceRepo, name: &str) -> Result<Option<String>> {
     let wf = WorkFile::load(&ws.root)?;
     if let Some(b) = wf.use_branch.get(name) {
         return Ok(Some(b.clone()).filter(|b| b != "default"));
@@ -799,25 +797,25 @@ pub fn active_variant(ws: &Workspace, name: &str) -> Result<Option<String>> {
     Ok(ws.manifest.skills.get(name).and_then(|s| s.use_branch.clone()))
 }
 
-fn editing_key(ws: &Workspace, name: &str) -> String {
+fn editing_key(ws: &SourceRepo, name: &str) -> String {
     format!("editing:{}:{name}", ws.root.display())
 }
 
-fn worktree_path(ctx: &Ctx, ws: &Workspace, branch: &str) -> PathBuf {
+fn worktree_path(ctx: &Ctx, ws: &SourceRepo, branch: &str) -> PathBuf {
     ctx.paths.work().join(ws.key()).join(branch.replace('/', "--"))
 }
 
-fn snapshot_key(ws: &Workspace, name: &str) -> String {
+fn snapshot_key(ws: &SourceRepo, name: &str) -> String {
     format!("snapshot:{}:{name}", ws.root.display())
 }
 
-fn local_mirror(ws: &Workspace) -> Mirror {
+fn local_mirror(ws: &SourceRepo) -> Mirror {
     Mirror { source: crate::id::SourceId::new("local", &ws.name), dir: ws.root.clone() }
 }
 
 /// Before an upstream merge rewrites the working tree, pin dev deployments to the
 /// committed version so agents keep seeing it until the merge result is committed.
-fn freeze_dev_placements(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<()> {
+fn freeze_dev_placements(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<()> {
     let key = ws.skill_key(name);
     if ctx.state.placements("WHERE skill=?1", &[&key])?.is_empty() {
         return Ok(());
@@ -828,8 +826,8 @@ fn freeze_dev_placements(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Directory (and optional commit/tree) that a workspace skill currently deploys.
-pub fn deploy_source(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<(PathBuf, Option<String>, Option<String>, bool)> {
+/// Directory (and optional commit/tree) that a source repo skill currently deploys.
+pub fn deploy_source(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<(PathBuf, Option<String>, Option<String>, bool)> {
     let rel = ws.skill(name)?.path.clone();
     let editing = ctx.state.meta_get(&editing_key(ws, name))?;
     if let Some(snap) = ctx.state.meta_get(&snapshot_key(ws, name))? {
@@ -863,15 +861,15 @@ pub fn deploy_source(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<(PathBuf, 
     }
 }
 
-fn skill_placement_name(ws: &Workspace, name: &str) -> String {
+fn skill_placement_name(ws: &SourceRepo, name: &str) -> String {
     let _ = ws;
     name.to_string()
 }
 
-/// (Re)deploy a workspace skill's dev placements for the workspace agents.
-pub fn redeploy(ctx: &Ctx, ws: &Workspace, name: &str, agents_sel: Option<&[&'static Agent]>) -> Result<Vec<String>> {
+/// (Re)deploy a source repo skill's dev placements for the source repo agents.
+pub fn redeploy(ctx: &Ctx, ws: &SourceRepo, name: &str, agents_sel: Option<&[&'static Agent]>) -> Result<Vec<String>> {
     let key = ws.skill_key(name);
-    let existing = ctx.state.placements("WHERE skill=?1 AND origin='workspace'", &[&key])?;
+    let existing = ctx.state.placements("WHERE skill=?1 AND origin='source-repo'", &[&key])?;
     let agents_sel: Vec<&'static Agent> = match agents_sel {
         Some(a) => a.to_vec(),
         None if !existing.is_empty() => existing.iter().filter_map(|p| agents::get(&p.agent).ok()).collect(),
@@ -884,7 +882,7 @@ pub fn redeploy(ctx: &Ctx, ws: &Workspace, name: &str, agents_sel: Option<&[&'st
             ctx,
             &PlaceRequest {
                 skill: key.clone(),
-                origin: "workspace",
+                origin: "source-repo",
                 agent: a,
                 scope: Scope::Global,
                 name: skill_placement_name(ws, name),
@@ -921,13 +919,13 @@ pub fn redeploy(ctx: &Ctx, ws: &Workspace, name: &str, agents_sel: Option<&[&'st
 }
 
 #[derive(Debug, Serialize)]
-pub struct WsInstallReport {
-    pub workspace: String,
+pub struct RepoInstallReport {
+    pub source_repo: String,
     pub skills: Vec<(String, Vec<String>)>,
 }
 
-/// In a workspace, `install` links every workspace skill in dev mode (spec §8).
-pub fn install_dev(ctx: &Ctx, ws: &Workspace, agent_names: &[String]) -> Result<WsInstallReport> {
+/// In a source repo, `install` links every source repo skill in dev mode (spec §8).
+pub fn install_dev(ctx: &Ctx, ws: &SourceRepo, agent_names: &[String]) -> Result<RepoInstallReport> {
     let agents_sel = if agent_names.is_empty() { ws.agents(ctx)? } else { agents::parse_list(agent_names)? };
     let mut skills = Vec::new();
     for name in ws.manifest.skills.keys() {
@@ -936,7 +934,7 @@ pub fn install_dev(ctx: &Ctx, ws: &Workspace, agent_names: &[String]) -> Result<
             Err(e) => skills.push((name.clone(), vec![format!("error: {e:#}")])),
         }
     }
-    Ok(WsInstallReport { workspace: ws.name.clone(), skills })
+    Ok(RepoInstallReport { source_repo: ws.name.clone(), skills })
 }
 
 pub fn link_target_for_name(ctx: &Ctx, input: &str) -> Result<Option<LinkTarget>> {
@@ -984,8 +982,8 @@ pub fn edit(ctx: &Ctx, input: &str, branch: Option<&str>) -> Result<EditReport> 
         input.to_string()
     } else {
         // An upstream skill: vendor it first (copy-on-write).
-        let spec = crate::lookup::spec_from_input(ctx, input).with_context(|| format!("`{input}` is not a workspace skill"))?;
-        if !ctx.confirm(&format!("`{input}` is not in this workspace. Vendor {spec} into it?"), &[])? {
+        let spec = crate::lookup::spec_from_input(ctx, input).with_context(|| format!("`{input}` is not a source repo skill"))?;
+        if !ctx.confirm(&format!("`{input}` is not in this source repo. Vendor {spec} into it?"), &[])? {
             bail!("cancelled");
         }
         let r = vendor(ctx, &ws, input, None, None)?;
@@ -1105,7 +1103,7 @@ pub fn use_variant(ctx: &Ctx, input: &str, local: bool, reset: bool) -> Result<U
     if let Some(b) = &branch
         && !git::git_ok(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")])
     {
-        bail!("no branch `{b}` in the workspace");
+        bail!("no branch `{b}` in the source repo");
     }
     if local {
         let path = ws.root.join(config::WORK_FILE);
@@ -1131,12 +1129,12 @@ pub fn use_variant(ctx: &Ctx, input: &str, local: bool, reset: bool) -> Result<U
             }
         }
     }
-    let ws = Workspace::open(&ws.root)?;
+    let ws = SourceRepo::open(&ws.root)?;
     let placements = redeploy(ctx, &ws, &name, None)?;
     Ok(UseReport { name, variant: branch, local, placements })
 }
 
-pub fn set_license_override(ws: &Workspace, name: &str, justification: &str) -> Result<()> {
+pub fn set_license_override(ws: &SourceRepo, name: &str, justification: &str) -> Result<()> {
     ws.skill(name)?;
     let ov = LicenseOverride { justification: justification.to_string() };
     ws.edit_doc(|doc| {
@@ -1148,7 +1146,7 @@ pub fn set_license_override(ws: &Workspace, name: &str, justification: &str) -> 
 // ---------------------------------------------------------------- status
 
 #[derive(Debug, Serialize)]
-pub struct WsSkillStatus {
+pub struct RepoSkillStatus {
     pub name: String,
     pub path: String,
     pub upstream: Option<String>,
@@ -1168,16 +1166,16 @@ pub struct WsSkillStatus {
 }
 
 #[derive(Debug, Serialize)]
-pub struct WsStatus {
+pub struct RepoStatus {
     pub root: String,
     pub name: String,
     pub branch: Option<String>,
-    pub skills: Vec<WsSkillStatus>,
+    pub skills: Vec<RepoSkillStatus>,
     pub targets: Vec<String>,
 }
 
-pub fn status(ctx: &Ctx, ws: &Workspace) -> Result<WsStatus> {
-    let lint = crate::lint::lint_workspace(ctx, ws, &[]).ok();
+pub fn status(ctx: &Ctx, ws: &SourceRepo) -> Result<RepoStatus> {
+    let lint = crate::lint::lint_repo(ctx, ws, &[]).ok();
     let branches: Vec<String> =
         git(&ws.root, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]).unwrap_or_default().lines().map(String::from).collect();
     let current = git::current_branch(&ws.root);
@@ -1222,7 +1220,7 @@ pub fn status(ctx: &Ctx, ws: &Workspace) -> Result<WsStatus> {
             })
             .unwrap_or((0, 0));
         let dirty = git(&ws.root, &["status", "--porcelain", "--", &s.path]).map(|o| !o.trim().is_empty()).unwrap_or(false);
-        skills.push(WsSkillStatus {
+        skills.push(RepoSkillStatus {
             name: name.clone(),
             path: s.path.clone(),
             upstream: s.upstream.clone(),
@@ -1246,7 +1244,7 @@ pub fn status(ctx: &Ctx, ws: &Workspace) -> Result<WsStatus> {
             uncommitted: dirty,
         });
     }
-    Ok(WsStatus {
+    Ok(RepoStatus {
         root: ws.root.to_string_lossy().to_string(),
         name: ws.name.clone(),
         branch: current,
@@ -1255,8 +1253,8 @@ pub fn status(ctx: &Ctx, ws: &Workspace) -> Result<WsStatus> {
     })
 }
 
-/// Content of a workspace skill file at B (base), U (upstream) or C (working tree).
-pub fn version_file(ctx: &Ctx, ws: &Workspace, name: &str, which: &str, rel: &str) -> Result<Option<Vec<u8>>> {
+/// Content of a source repo skill file at B (base), U (upstream) or C (working tree).
+pub fn version_file(ctx: &Ctx, ws: &SourceRepo, name: &str, which: &str, rel: &str) -> Result<Option<Vec<u8>>> {
     let rel = rel.trim_start_matches('/');
     match which {
         "working" | "C" => Ok(std::fs::read(ws.skill_dir(name)?.join(rel)).ok()),
@@ -1291,7 +1289,7 @@ pub fn version_file(ctx: &Ctx, ws: &Workspace, name: &str, which: &str, rel: &st
 }
 
 /// Merge B → U into a scratch copy of C (the working tree is never touched).
-pub fn candidate_dir(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<tempfile::TempDir> {
+pub fn candidate_dir(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<tempfile::TempDir> {
     let (id, req) = upstream_of(ws, name)?.context("local original: no upstream candidate")?;
     let l = ws.lock.skills.get(name).cloned().unwrap_or_default();
     let base = l.base.clone().context("no base recorded")?;
@@ -1310,8 +1308,8 @@ pub fn candidate_dir(ctx: &Ctx, ws: &Workspace, name: &str) -> Result<tempfile::
     Ok(tmp)
 }
 
-/// Files that differ between two versions of a workspace skill (for the Changes view).
-pub fn changed_files(ctx: &Ctx, ws: &Workspace, name: &str, from: &str, to: &str) -> Result<Vec<String>> {
+/// Files that differ between two versions of a source repo skill (for the Changes view).
+pub fn changed_files(ctx: &Ctx, ws: &SourceRepo, name: &str, from: &str, to: &str) -> Result<Vec<String>> {
     let mut paths: BTreeSet<String> = BTreeSet::new();
     let dir = ws.skill_dir(name)?;
     for e in walkdir::WalkDir::new(&dir).into_iter().filter_entry(|e| e.file_name() != ".git").flatten() {

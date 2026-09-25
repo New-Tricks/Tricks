@@ -46,7 +46,7 @@ pub fn scope_from(ctx: &Ctx, to: Option<&str>, global: bool) -> Result<Scope> {
 }
 
 /// Resolve `input` into something linkable: a local skill directory (dev mode), a
-/// workspace skill (dev mode, active variant), or a remote skill (store).
+/// source repo skill (dev mode, active variant), or a remote skill (store).
 pub fn link_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
     let p = Path::new(input);
     let local = if p.is_absolute() { p.to_path_buf() } else { ctx.opts.cwd.join(p) };
@@ -57,10 +57,10 @@ pub fn link_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
         let doc = SkillDoc::parse(&std::fs::read_to_string(dir.join("SKILL.md"))?);
         let folder = dir.file_name().unwrap().to_string_lossy().to_string();
         let name = doc.name.filter(|n| crate::id::valid_skill_name(n)).unwrap_or(folder);
-        let skill = crate::workspace::skill_key_for_dir(&dir).unwrap_or_else(|| format!("local:{}", dir.display()));
+        let skill = crate::source_repo::skill_key_for_dir(&dir).unwrap_or_else(|| format!("local:{}", dir.display()));
         return Ok(LinkTarget { skill, name, dir, tree: None, commit: None, dev: true });
     }
-    if let Some(t) = crate::workspace::link_target_for_name(ctx, input)? {
+    if let Some(t) = crate::source_repo::link_target_for_name(ctx, input)? {
         return Ok(t);
     }
     let spec = crate::lookup::spec_from_input(ctx, input)?;
@@ -68,7 +68,7 @@ pub fn link_target(ctx: &Ctx, input: &str) -> Result<LinkTarget> {
     let dir = store::from_mirror(ctx, &r.mirror, &r.reference.commit, &r.id.path, &r.tree)?;
     Ok(LinkTarget {
         skill: r.id.to_string(),
-        name: crate::workbench::placement_name(&r.name, &r.id),
+        name: crate::user::placement_name(&r.name, &r.id),
         dir,
         tree: Some(r.tree.clone()),
         commit: Some(r.reference.commit.clone()),
@@ -88,7 +88,7 @@ pub fn link(
     let scope = scope_from(ctx, to, global)?;
     let t = link_target(ctx, input)?;
     let agents_sel = if agent_names.is_empty() {
-        crate::workbench::default_agents(&crate::workbench::load_manifest(ctx)?)?
+        crate::user::default_agents(&crate::user::load_manifest(ctx)?)?
     } else {
         agents::parse_list(agent_names)?
     };
@@ -130,7 +130,7 @@ pub fn unlink(ctx: &Ctx, input: Option<&str>, to: Option<&str>, global: bool, al
         None => bail!("name a skill to unlink, or pass --all"),
     };
     let mut removed = Vec::new();
-    for p in ctx.state.placements("WHERE origin IN ('link','workspace')", &[])? {
+    for p in ctx.state.placements("WHERE origin IN ('link','source-repo')", &[])? {
         if let Some(s) = &scope
             && p.scope != s.key()
         {

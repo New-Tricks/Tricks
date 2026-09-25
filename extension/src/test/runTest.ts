@@ -24,7 +24,7 @@ async function main(): Promise<void> {
     GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@e", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@e",
   };
   fs.mkdirSync(path.join(root, "config"), { recursive: true });
-  fs.writeFileSync(path.join(root, "config/tricks.toml"), '[settings]\ndefault_sources = false\nagents = ["claude"]\n');
+  fs.writeFileSync(path.join(root, "config/tricks.toml"), '[settings]\ndefault_catalogs = false\nagents = ["claude"]\n');
   // Upstream fixture.
   const up = path.join(root, "fixtures/acme/skills");
   fs.mkdirSync(path.join(up, "skills/hello"), { recursive: true });
@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   sh(up, "git", ["init", "-q", "-b", "main"], env);
   sh(up, "git", ["add", "-A"], env);
   sh(up, "git", ["commit", "-qm", "init"], env);
-  // Workspace with one vendored skill and one broken skill.
+  // Source repo with one vendored skill and one broken skill.
   const ws = path.join(root, "ws");
   fs.mkdirSync(ws);
   sh(ws, "git", ["init", "-q", "-b", "main"], env);

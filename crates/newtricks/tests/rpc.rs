@@ -58,7 +58,7 @@ fn serve_stdio_roundtrip() {
     send(&mut stdin, &json!({"jsonrpc":"2.0","id":2,"method":"show","params":{"skill":"acme/skills//hello"}}));
     let r = recv(&mut out);
     assert_eq!(r["result"]["canonical"], "github.com/acme/skills//skills/hello@v1.0.0", "{r}");
-    send(&mut stdin, &json!({"jsonrpc":"2.0","id":3,"method":"workbench/add","params":{"skill":"acme/skills//hello","agents":["claude"]}}));
+    send(&mut stdin, &json!({"jsonrpc":"2.0","id":3,"method":"user/add","params":{"skill":"acme/skills//hello","agents":["claude"]}}));
     let r = recv(&mut out);
     assert!(r["result"]["placements"].as_array().unwrap().len() == 1, "{r}");
     // Update with a pending change and no `yes` → confirmation_required error.
@@ -67,11 +67,11 @@ fn serve_stdio_roundtrip() {
     git(&up, &["tag", "v1.1.0"]);
     let cfg = s.config.join("tricks.toml");
     std::fs::write(&cfg, std::fs::read_to_string(&cfg).unwrap().replace("[settings]", "[settings]\nfetch_interval = \"0s\"")).unwrap();
-    send(&mut stdin, &json!({"jsonrpc":"2.0","id":4,"method":"workbench/update","params":{}}));
+    send(&mut stdin, &json!({"jsonrpc":"2.0","id":4,"method":"user/update","params":{}}));
     let r = recv(&mut out);
     assert_eq!(r["error"]["code"], -32001, "{r}");
     assert!(r["error"]["data"]["details"].to_string().contains("v1.1.0"));
-    send(&mut stdin, &json!({"jsonrpc":"2.0","id":5,"method":"workbench/update","params":{"yes": true}}));
+    send(&mut stdin, &json!({"jsonrpc":"2.0","id":5,"method":"user/update","params":{"yes": true}}));
     let r = recv(&mut out);
     assert_eq!(r["result"]["updates"][0]["applied"], true, "{r}");
     send(&mut stdin, &json!({"jsonrpc":"2.0","id":6,"method":"nope"}));

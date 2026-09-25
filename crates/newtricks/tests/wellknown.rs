@@ -68,7 +68,7 @@ fn wellknown_skill_md_and_archives() {
             ("evil", "archive", "/evil.tar.gz", &evil, None),
         ],
     );
-    let out = s.cmd(&s.root(), &["source", "add", &base, "--kind", "wellknown"]);
+    let out = s.cmd(&s.root(), &["catalog", "add", &base, "--kind", "wellknown"]);
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "{stderr}");
     assert!(stderr.contains("tampered") && stderr.contains("digest mismatch"), "{stderr}");
@@ -119,7 +119,7 @@ fn rejects_unknown_schema() {
         "/.well-known/agent-skills/index.json".into(),
         br#"{"$schema":"https://schemas.agentskills.io/discovery/9.9.9/schema.json","skills":[]}"#.to_vec(),
     );
-    let out = s.cmd(&s.root(), &["source", "add", &base, "--kind", "wellknown"]);
+    let out = s.cmd(&s.root(), &["catalog", "add", &base, "--kind", "wellknown"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("unrecognized $schema"), "{err}");
 }

@@ -1,4 +1,4 @@
-//! `tricks publish` (spec §11): workspace → distribution repository installable by
+//! `tricks publish` (spec §11): source repo → distribution repository installable by
 //! APM, `npx skills`, Claude plugin marketplaces, Copilot, Codex and Cursor.
 
 use crate::config::{self, LicenseRecord, PublishTarget};
@@ -7,7 +7,7 @@ use crate::git::{self, git};
 use crate::license::{self, Gate};
 use crate::risk::RiskReport;
 use crate::skill::{self, SkillDoc};
-use crate::workspace::{self, Workspace};
+use crate::source_repo::{self, SourceRepo};
 use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
@@ -79,7 +79,7 @@ fn exclude_set(globs: &[String]) -> Result<GlobSet> {
     Ok(b.build()?)
 }
 
-fn selected_skills(ws: &Workspace, t: &PublishTarget) -> Result<Vec<String>> {
+fn selected_skills(ws: &SourceRepo, t: &PublishTarget) -> Result<Vec<String>> {
     if t.skills.iter().any(|s| s == "*") {
         return Ok(ws.manifest.skills.keys().cloned().collect());
     }
@@ -90,8 +90,8 @@ fn selected_skills(ws: &Workspace, t: &PublishTarget) -> Result<Vec<String>> {
 }
 
 /// The remote a publish target points at: `owner/repo` or `host/owner/repo` shorthand,
-/// any git URL, or a path to a repository (relative to the workspace root).
-fn target_url(ctx: &Ctx, ws: &Workspace, t: &PublishTarget) -> Result<String> {
+/// any git URL, or a path to a repository (relative to the source repo root).
+fn target_url(ctx: &Ctx, ws: &SourceRepo, t: &PublishTarget) -> Result<String> {
     let r = t.repo.trim();
     if r.is_empty() {
         bail!("publish target has an empty `repo`");
@@ -118,7 +118,8 @@ fn repo_name(url: &str) -> String {
 /// Nothing is kept locally between runs: whatever the remote has is the starting point.
 fn prepare_target(ctx: &Ctx, url: &str) -> Result<(PathBuf, String, std::fs::File)> {
     let key = crate::paths::path_key(Path::new(url));
-    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(ctx.paths.locks().join(format!("publish-{key}.lock")))?;
+    let lock =
+        std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(ctx.paths.locks().join(format!("publish-{key}.lock")))?;
     lock.lock().context("locking publish target")?;
     let dir = ctx.paths.publish_clones().join(key);
     if !dir.join(".git").exists() {
@@ -274,13 +275,13 @@ pub fn suggest_bump(old: &Path, new: &Path) -> (String, Vec<String>) {
     (level.into(), reasons)
 }
 
-/// Last workspace commit published to this target (from the trailer).
+/// Last source repo commit published to this target (from the trailer).
 fn last_published_source(repo: &Path) -> Option<String> {
     let log = git(repo, &["log", "-50", "--format=%(trailers:key=Tricks-Source,valueonly)"]).ok()?;
     log.lines().find(|l| !l.trim().is_empty()).and_then(|l| l.rsplit_once('@').map(|(_, c)| c.trim().to_string()))
 }
 
-fn changelog_section(ws: &Workspace, skills: &[String], since: Option<&str>, heading: &str) -> String {
+fn changelog_section(ws: &SourceRepo, skills: &[String], since: Option<&str>, heading: &str) -> String {
     let mut out = format!("## {heading}\n\n");
     let mut any = false;
     for name in skills {
@@ -308,7 +309,7 @@ fn changelog_section(ws: &Workspace, skills: &[String], since: Option<&str>, hea
 }
 
 fn marketplace_json(
-    ws: &Workspace,
+    ws: &SourceRepo,
     t: &PublishTarget,
     market_name: &str,
     skills: &[String],
@@ -370,8 +371,8 @@ pub fn validate_marketplace_name(n: &str) -> Result<()> {
 }
 
 pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
-    let ws = workspace::require(ctx)?;
-    let _lock = workspace::workspace_lock(ctx, &ws)?;
+    let ws = source_repo::require(ctx)?;
+    let _lock = source_repo::source_repo_lock(ctx, &ws)?;
     let t = ws.manifest.publish.targets.get(&opts.target).cloned().with_context(|| {
         format!(
             "no publish target `{}` (have: {})",
@@ -380,7 +381,10 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
         )
     })?;
     if !opts.dry_run && !opts.push && !opts.pr {
-        bail!("publishing to `{}` needs --push (commit, tag and push) or --pr (push a branch and open a pull request); preview with --dry-run", opts.target);
+        bail!(
+            "publishing to `{}` needs --push (commit, tag and push) or --pr (push a branch and open a pull request); preview with --dry-run",
+            opts.target
+        );
     }
     let url = target_url(ctx, &ws, &t)?;
     let skills = selected_skills(&ws, &t)?;
@@ -395,7 +399,7 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
     if dirty.trim().is_empty() {
         gates.push(gate("committed source", "pass", vec![]));
     } else if opts.dry_run {
-        gates.push(gate("committed source", "warn", vec!["workspace has uncommitted changes (allowed for --dry-run)".into()]));
+        gates.push(gate("committed source", "warn", vec!["source repo has uncommitted changes (allowed for --dry-run)".into()]));
     } else {
         gates.push(gate("committed source", "fail", dirty.lines().take(10).map(String::from).collect()));
         blocked = true;
@@ -403,7 +407,7 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
     let source_commit = git::head_commit(&ws.root)?;
 
     // 2. Lint.
-    let lint = crate::lint::lint_workspace(ctx, &ws, &skills)?;
+    let lint = crate::lint::lint_repo(ctx, &ws, &skills)?;
     if lint.errors > 0 {
         blocked = true;
         gates.push(gate(
@@ -477,7 +481,7 @@ pub fn publish(ctx: &Ctx, opts: &PublishOptions) -> Result<PublishReport> {
             }
             let lower = rel.to_lowercase();
             if lower.ends_with(".env") || lower.starts_with("notes/") || lower.contains(".draft.") || lower.ends_with(".ds_store") {
-                leak_warn.push(format!("{name}/{rel} looks workspace-only (add it to exclude)"));
+                leak_warn.push(format!("{name}/{rel} looks private to the source repo (add it to exclude)"));
             }
             let to = dest.join(&rel);
             std::fs::create_dir_all(to.parent().unwrap())?;

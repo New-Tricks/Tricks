@@ -131,8 +131,8 @@ fn report(ctx: &Ctx, o: Origin, dir: &Path, license: LicenseRecord) -> Result<Sh
             }
         }
     }
-    let identity = crate::sources::cached_identity(ctx, &o.id.source.host);
-    let starred = crate::sources::cached_starred(ctx, &o.id.source.host);
+    let identity = crate::catalogs::cached_identity(ctx, &o.id.source.host);
+    let starred = crate::catalogs::cached_starred(ctx, &o.id.source.host);
     let signals = crate::index::skill_signals(ctx, &id);
     let mut risk_summary = risk.summary();
     risk_summary.extend(crate::index::signal_risks(&signals));
@@ -154,8 +154,8 @@ fn report(ctx: &Ctx, o: Origin, dir: &Path, license: LicenseRecord) -> Result<Sh
         listed_in,
         installs,
         trust: crate::index::trust_for(o.id.source.owner(), &o.id.source.repo_path, &identity, &starred).into(),
-        installed: crate::workbench::installed_ids(ctx)?.contains(&id),
-        vendored: crate::workspace::vendored_upstreams(ctx)?.contains(&id),
+        installed: crate::user::installed_ids(ctx)?.contains(&id),
+        vendored: crate::source_repo::vendored_upstreams(ctx)?.contains(&id),
         store_path: dir.to_string_lossy().to_string(),
         signals,
         id,

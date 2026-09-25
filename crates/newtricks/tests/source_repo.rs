@@ -1,4 +1,4 @@
-//! M3/M4 acceptance: workspace authoring, upstream merges, variants, lint, publish, pr.
+//! M3/M4 acceptance: source repo authoring, upstream merges, variants, lint, publish, pr.
 // Asserts on symlinked placements; Windows deploys copies (spec §8), so these run on Unix.
 #![cfg(unix)]
 
@@ -25,7 +25,7 @@ fn setup() -> (Sandbox, PathBuf, PathBuf) {
     std::fs::create_dir_all(&ws).unwrap();
     git(&ws, &["init", "-q", "-b", "main"]);
     s.ok_in(&ws, &["init"]);
-    commit_all(&ws, "init workspace");
+    commit_all(&ws, "init source repo");
     (s, up, ws)
 }
 
@@ -79,10 +79,32 @@ fn init_agent_skill_is_placed_in_the_repository_not_user_scope() {
 }
 
 #[test]
+fn configs_written_before_the_rename_still_work_and_are_rewritten_in_place() {
+    let (s, _up, ws) = setup();
+    // Old spellings in the user config and the source repo manifest.
+    let user = s.config.join("tricks.toml");
+    std::fs::write(&user, read(&user).replace("default_catalogs", "default_sources").replace("[source-repos]", "[workspaces]")).unwrap();
+    std::fs::write(ws.join("tricks.toml"), read(&ws.join("tricks.toml")).replace("[source-repo]", "[workspace]\nname = \"legacy\""))
+        .unwrap();
+    let st = s.json_in(&ws, &["status"]);
+    assert_eq!(st["source_repo"]["name"], "legacy", "{st}");
+    let repos = s.json_in(&ws, &["workspaces"]);
+    assert_eq!(repos[0]["name"], "legacy", "{repos}");
+    // Old command spelling, and the next write renames the keys where they stand.
+    s.ok_in(&ws, &["source", "add", "acme/skills"]);
+    let u = read(&user);
+    assert!(u.contains("[catalogs]") && u.contains("[source-repos]") && u.contains("default_catalogs"), "{u}");
+    assert!(!u.contains("[sources]") && !u.contains("[workspaces]") && !u.contains("default_sources"), "{u}");
+    s.ok_in(&ws, &["new", "greeter", "--description", "Writes greetings. Use when the user asks for a greeting."]);
+    let m = read(&ws.join("tricks.toml"));
+    assert!(m.contains("[source-repo]\nname = \"legacy\"") && !m.contains("[workspace]"), "{m}");
+}
+
+#[test]
 fn init_vendor_and_block_class_confirmation() {
     let (s, _up, ws) = setup();
     assert!(read(&ws.join(".gitignore")).contains("tricks.work.toml"));
-    assert!(read(&s.config.join("tricks.toml")).contains("[workspaces]"));
+    assert!(read(&s.config.join("tricks.toml")).contains("[source-repos]"));
     let r = s.json_in(&ws, &["vendor", "acme/skills//hello"]);
     assert_eq!(r["upstream"], "github.com/acme/skills//skills/hello");
     assert_eq!(r["license"]["class"], "allow");
@@ -234,7 +256,7 @@ fn branch_experiments_variants_and_agent_trailers() {
     assert_eq!(std::fs::read_link(&deployed).unwrap(), ws.join("skills/greeter"));
     assert!(git(&ws, &["status", "--porcelain", "--", "tricks.work.toml"]).is_empty(), "work file must be gitignored");
     let st = s.json_in(&ws, &["status"]);
-    let skills = st["workspace"]["skills"].as_array().unwrap();
+    let skills = st["source_repo"]["skills"].as_array().unwrap();
     let g = skills.iter().find(|x| x["name"] == "greeter").unwrap();
     assert!(g["branches"].as_array().unwrap().iter().any(|b| b == "terse"), "{g}");
 }
@@ -272,7 +294,7 @@ fn lint_blocks_publish_and_publish_generates_ecosystem_files() {
     std::fs::write(&md, good).unwrap();
     commit_all(&ws, "fix name");
 
-    // Dirty workspace blocks a real publish.
+    // Dirty source repo blocks a real publish.
     write(&ws.join("scratch.txt"), "x");
     let o = s.cmd(&ws, &["--json", "publish", "public", "--bump", "minor", "--push", "--yes"]);
     assert!(!o.status.success());

@@ -1,8 +1,8 @@
-//! Source adapters (spec §7). Catalog adapters supply pointers; the git adapter
+//! Catalog adapters (spec §7). Catalog adapters supply pointers; the git adapter
 //! resolves every pointer to real content. Modes: indexed (ahead of time) and
 //! live-query (at search time, cached with a TTL).
 
-use crate::config::{self, SourceEntry};
+use crate::config::{self, CatalogEntry};
 use crate::ctx::Ctx;
 use crate::git::host_map;
 use crate::github::{GitHub, encode_query, is_not_found};
@@ -43,7 +43,7 @@ impl Kind {
             "marketplace" => Kind::Marketplace,
             "wellknown" | "well-known" => Kind::WellKnown,
             "pointers" => Kind::Pointers,
-            _ => bail!("unknown source kind `{s}` (repo | marketplace | wellknown | pointers)"),
+            _ => bail!("unknown catalog kind `{s}` (repo | marketplace | wellknown | pointers)"),
         })
     }
     pub fn as_str(&self) -> &'static str {
@@ -57,7 +57,7 @@ impl Kind {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct Source {
+pub struct Catalog {
     pub key: String,
     pub kind: Kind,
     pub default: bool,
@@ -66,7 +66,7 @@ pub struct Source {
     pub skills: i64,
 }
 
-fn classify_key(key: &str, entry: &SourceEntry) -> Result<Kind> {
+fn classify_key(key: &str, entry: &CatalogEntry) -> Result<Kind> {
     if let Some(k) = &entry.kind {
         return Kind::parse(k);
     }
@@ -79,21 +79,21 @@ fn classify_key(key: &str, entry: &SourceEntry) -> Result<Kind> {
     Ok(Kind::Repo)
 }
 
-/// All configured sources (manifest + defaults).
-pub fn list(ctx: &Ctx) -> Result<Vec<Source>> {
-    let m = crate::workbench::load_manifest(ctx)?;
-    let mut out: BTreeMap<String, Source> = BTreeMap::new();
-    if m.settings.default_sources {
+/// All configured catalogs (user config + defaults).
+pub fn list(ctx: &Ctx) -> Result<Vec<Catalog>> {
+    let m = crate::user::load_manifest(ctx)?;
+    let mut out: BTreeMap<String, Catalog> = BTreeMap::new();
+    if m.settings.default_catalogs {
         for r in DEFAULT_REPOS {
             out.insert(
                 r.to_string(),
-                Source { key: r.to_string(), kind: Kind::Repo, default: true, disabled: false, last_indexed: None, skills: 0 },
+                Catalog { key: r.to_string(), kind: Kind::Repo, default: true, disabled: false, last_indexed: None, skills: 0 },
             );
         }
     }
-    for (k, e) in &m.sources {
+    for (k, e) in &m.catalogs {
         let kind = classify_key(k, e)?;
-        out.insert(k.clone(), Source { key: k.clone(), kind, default: false, disabled: e.disabled, last_indexed: None, skills: 0 });
+        out.insert(k.clone(), Catalog { key: k.clone(), kind, default: false, disabled: e.disabled, last_indexed: None, skills: 0 });
     }
     for s in out.values_mut() {
         s.last_indexed = ctx.state.fetched_at(&format!("index:{}", s.key))?;
@@ -102,7 +102,7 @@ pub fn list(ctx: &Ctx) -> Result<Vec<Source>> {
     Ok(out.into_values().collect())
 }
 
-/// Normalize user input into a source key and kind.
+/// Normalize user input into a catalog key and kind.
 pub fn normalize_input(ctx: &Ctx, input: &str, kind: Option<&str>) -> Result<(String, Kind)> {
     let p = std::path::Path::new(input);
     let looks_file =
@@ -131,32 +131,32 @@ pub fn normalize_input(ctx: &Ctx, input: &str, kind: Option<&str>) -> Result<(St
 
 pub fn add(ctx: &Ctx, input: &str, kind: Option<&str>) -> Result<(String, Kind)> {
     let (key, k) = normalize_input(ctx, input, kind)?;
-    let path = ctx.paths.workbench_manifest();
+    let path = ctx.paths.user_manifest();
     let mut doc = config::load_doc(&path)?;
-    let entry = SourceEntry { kind: if k == Kind::Repo { None } else { Some(k.as_str().into()) }, url: None, disabled: false };
-    config::table_mut(&mut doc, &["sources"]).insert(&key, config::to_inline(&entry)?);
+    let entry = CatalogEntry { kind: if k == Kind::Repo { None } else { Some(k.as_str().into()) }, url: None, disabled: false };
+    config::table_mut(&mut doc, &["catalogs"]).insert(&key, config::to_inline(&entry)?);
     config::save_doc(&path, &doc)?;
     Ok((key, k))
 }
 
 pub fn remove(ctx: &Ctx, input: &str) -> Result<String> {
-    let m = crate::workbench::load_manifest(ctx)?;
-    let key = if m.sources.contains_key(input) {
+    let m = crate::user::load_manifest(ctx)?;
+    let key = if m.catalogs.contains_key(input) {
         input.to_string()
     } else {
         normalize_input(ctx, input, None).map(|(k, _)| k).unwrap_or_else(|_| input.to_string())
     };
-    let path = ctx.paths.workbench_manifest();
+    let path = ctx.paths.user_manifest();
     let mut doc = config::load_doc(&path)?;
-    if DEFAULT_REPOS.contains(&key.as_str()) && !m.sources.contains_key(&key) {
-        // Disable a default source.
-        let entry = SourceEntry { disabled: true, ..Default::default() };
-        config::table_mut(&mut doc, &["sources"]).insert(&key, config::to_inline(&entry)?);
-    } else if config::table_mut(&mut doc, &["sources"]).remove(&key).is_none() {
-        bail!("no source `{input}`");
+    if DEFAULT_REPOS.contains(&key.as_str()) && !m.catalogs.contains_key(&key) {
+        // Disable a default catalog.
+        let entry = CatalogEntry { disabled: true, ..Default::default() };
+        config::table_mut(&mut doc, &["catalogs"]).insert(&key, config::to_inline(&entry)?);
+    } else if config::table_mut(&mut doc, &["catalogs"]).remove(&key).is_none() {
+        bail!("no catalog `{input}`");
     }
     config::save_doc(&path, &doc)?;
-    // Drop index rows that came only from this source.
+    // Drop index rows that came only from this catalog.
     let origin_ids: BTreeSet<String> = BTreeSet::new();
     let _ = index::prune_source(ctx, &key, &origin_ids);
     ctx.state.conn.execute("DELETE FROM listings WHERE catalog=?1", [format!("{}:{key}", kind_label(&key))])?;
@@ -174,13 +174,13 @@ pub struct RefreshReport {
     pub skipped: usize,
 }
 
-/// Refresh stale (or all, with `force`) indexed sources.
+/// Refresh stale (or all, with `force`) indexed catalogs.
 pub fn refresh(ctx: &Ctx, force: bool, only: Option<&str>) -> Result<RefreshReport> {
     let mut rep = RefreshReport::default();
     if ctx.opts.offline {
         return Ok(rep);
     }
-    let interval = crate::workbench::load_manifest(ctx)?.fetch_interval();
+    let interval = crate::user::load_manifest(ctx)?.fetch_interval();
     // Plain repositories are fetched in parallel; catalogs one by one.
     let mut repo_jobs = Vec::new();
     let mut rest = Vec::new();
@@ -739,7 +739,7 @@ pub(crate) fn live_mark(ctx: &Ctx, adapter: &str, q: &str) -> Result<()> {
 
 /// Ensure repositories are indexed recently enough (bounded, parallel work for live adapters).
 pub(crate) fn ensure_repos_indexed(ctx: &Ctx, repos: &[SourceId]) {
-    let interval = crate::workbench::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
+    let interval = crate::user::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
     let stale: Vec<(SourceId, Option<Vec<String>>, String)> = repos
         .iter()
         .filter(|s| ctx.state.is_stale(&format!("index:{s}"), interval).unwrap_or(true))
@@ -758,7 +758,7 @@ pub(crate) fn ensure_repos_indexed(ctx: &Ctx, repos: &[SourceId]) {
 /// Index only the pointed-to skill directories of each repository (catalog pointers
 /// often land in large application repos). Freshness is tracked per directory.
 pub(crate) fn ensure_pointers_indexed(ctx: &Ctx, pointers: &[(SourceId, String)]) {
-    let interval = crate::workbench::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
+    let interval = crate::user::load_manifest(ctx).map(|m| m.fetch_interval()).unwrap_or(std::time::Duration::from_secs(86_400));
     let mut by_repo: BTreeMap<SourceId, Vec<String>> = BTreeMap::new();
     for (src, dir) in pointers {
         let key = format!("index:{src}//{dir}");

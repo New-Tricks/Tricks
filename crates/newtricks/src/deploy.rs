@@ -233,7 +233,7 @@ pub fn health(p: &Placement) -> String {
             _ => "replaced".into(),
         },
         Ok(md) if md.is_dir() && p.mode == "copy" => match (crate::treehash::tree_hash(dest).ok().flatten(), &p.tree) {
-            (Some(h), Some(t)) if &h != t && p.origin != "workspace" => "drifted".into(),
+            (Some(h), Some(t)) if &h != t && p.origin != "source-repo" => "drifted".into(),
             _ => "ok".into(),
         },
         Ok(_) => "replaced".into(),
