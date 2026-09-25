@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use toml_edit::{DocumentMut, Item, Table, value};
 
-pub const WORKSPACE_MANIFEST: &str = "tricks.toml";
-pub const WORKSPACE_LOCK: &str = "tricks.lock";
+pub const REPO_MANIFEST: &str = "tricks.toml";
+pub const REPO_LOCK: &str = "tricks.lock";
 pub const WORK_FILE: &str = "tricks.work.toml";
 pub const PUBLISHED_FILE: &str = ".tricks-published";
 
@@ -49,14 +49,14 @@ impl Policy {
     }
 }
 
-// ---------------------------------------------------------------- workbench
+// ---------------------------------------------------------------- user
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub agents: Vec<String>,
     pub fetch_interval: String,
-    pub default_sources: bool,
+    pub default_catalogs: bool,
     /// Live-query catalogs consulted on each search.
     pub live: Vec<String>,
 }
@@ -68,14 +68,14 @@ impl Default for Settings {
         Settings {
             agents: vec!["claude".into()],
             fetch_interval: "24h".into(),
-            default_sources: true,
+            default_catalogs: true,
             live: LIVE_CATALOGS.iter().map(|s| s.to_string()).collect(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SourceEntry {
+pub struct CatalogEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,7 +85,7 @@ pub struct SourceEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WbSkill {
+pub struct UserSkill {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,7 +100,7 @@ pub struct WbSkill {
     pub mode: Option<String>,
 }
 
-impl WbSkill {
+impl UserSkill {
     /// The ref request in `@ref` form (`latest` when unspecified).
     pub fn requested_ref(&self) -> String {
         if let Some(b) = &self.branch {
@@ -117,18 +117,18 @@ impl WbSkill {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorkbenchManifest {
+pub struct UserManifest {
     #[serde(default)]
     pub settings: Settings,
+    #[serde(default, rename = "source-repos")]
+    pub source_repos: BTreeMap<String, String>,
     #[serde(default)]
-    pub workspaces: BTreeMap<String, String>,
+    pub catalogs: BTreeMap<String, CatalogEntry>,
     #[serde(default)]
-    pub sources: BTreeMap<String, SourceEntry>,
-    #[serde(default)]
-    pub skills: BTreeMap<String, WbSkill>,
+    pub skills: BTreeMap<String, UserSkill>,
 }
 
-impl WorkbenchManifest {
+impl UserManifest {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
@@ -158,7 +158,7 @@ pub struct LockedSkill {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorkbenchLock {
+pub struct UserLock {
     #[serde(default = "one")]
     pub version: u32,
     #[serde(default, rename = "skill")]
@@ -169,10 +169,10 @@ fn one() -> u32 {
     1
 }
 
-impl WorkbenchLock {
+impl UserLock {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
-            return Ok(WorkbenchLock { version: 1, skills: vec![] });
+            return Ok(UserLock { version: 1, skills: vec![] });
         }
         let s = std::fs::read_to_string(path)?;
         toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))
@@ -194,10 +194,10 @@ impl WorkbenchLock {
     }
 }
 
-// ---------------------------------------------------------------- workspace
+// ---------------------------------------------------------------- source repo
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WsSettings {
+pub struct RepoSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -210,7 +210,7 @@ pub struct LicenseOverride {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WsSkill {
+pub struct RepoSkill {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
@@ -271,20 +271,20 @@ pub struct PublishConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorkspaceManifest {
+pub struct SourceRepoManifest {
+    #[serde(default, rename = "source-repo")]
+    pub source_repo: RepoSettings,
     #[serde(default)]
-    pub workspace: WsSettings,
-    #[serde(default)]
-    pub skills: BTreeMap<String, WsSkill>,
+    pub skills: BTreeMap<String, RepoSkill>,
     #[serde(default)]
     pub lint: LintConfig,
     #[serde(default)]
     pub publish: PublishConfig,
 }
 
-impl WorkspaceManifest {
+impl SourceRepoManifest {
     pub fn load(root: &Path) -> Result<Self> {
-        let p = root.join(WORKSPACE_MANIFEST);
+        let p = root.join(REPO_MANIFEST);
         let s = std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
         toml::from_str(&s).with_context(|| format!("parsing {}", p.display()))
     }
@@ -300,7 +300,7 @@ pub struct LicenseRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WsLocked {
+pub struct RepoLocked {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -313,25 +313,25 @@ pub struct WsLocked {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorkspaceLock {
+pub struct SourceRepoLock {
     #[serde(default = "one")]
     pub version: u32,
     #[serde(default)]
-    pub skills: BTreeMap<String, WsLocked>,
+    pub skills: BTreeMap<String, RepoLocked>,
 }
 
-impl WorkspaceLock {
+impl SourceRepoLock {
     pub fn load(root: &Path) -> Result<Self> {
-        let p = root.join(WORKSPACE_LOCK);
+        let p = root.join(REPO_LOCK);
         if !p.exists() {
-            return Ok(WorkspaceLock { version: 1, skills: BTreeMap::new() });
+            return Ok(SourceRepoLock { version: 1, skills: BTreeMap::new() });
         }
         let s = std::fs::read_to_string(&p)?;
         toml::from_str(&s).with_context(|| format!("parsing {}", p.display()))
     }
     pub fn save(&self, root: &Path) -> Result<()> {
         let body = toml::to_string_pretty(self)?;
-        write_atomic(&root.join(WORKSPACE_LOCK), format!("# Generated by New Tricks. Do not edit.\n{body}").as_bytes())
+        write_atomic(&root.join(REPO_LOCK), format!("# Generated by New Tricks. Do not edit.\n{body}").as_bytes())
     }
 }
 
@@ -426,11 +426,11 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
     Some(Duration::from_secs(secs))
 }
 
-/// Find the workspace root (directory containing `tricks.toml`) from `start` upward.
-pub fn find_workspace(start: &Path) -> Option<PathBuf> {
+/// Find the source repo root (directory containing `tricks.toml`) from `start` upward.
+pub fn find_source_repo(start: &Path) -> Option<PathBuf> {
     let mut cur = Some(start);
     while let Some(d) = cur {
-        if d.join(WORKSPACE_MANIFEST).is_file() {
+        if d.join(REPO_MANIFEST).is_file() {
             return Some(d.to_path_buf());
         }
         cur = d.parent();
@@ -450,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_manifest_roundtrip() {
+    fn source_repo_manifest_roundtrip() {
         let s = r#"
 [skills.pdf]
 path     = "skills/pdf"
@@ -465,14 +465,14 @@ path = "skills/deploy-aws"
 ignore = ["NT305"]
 
 [publish.targets.public]
-repo    = "../acme-skills-public"
+repo    = "acme/acme-skills-public"
 skills  = ["pdf", "deploy-aws"]
 exclude = ["evals/**"]
 
 [publish.targets.public.plugins]
 documents = ["pdf"]
 "#;
-        let m: WorkspaceManifest = toml::from_str(s).unwrap();
+        let m: SourceRepoManifest = toml::from_str(s).unwrap();
         assert_eq!(m.skills["pdf"].update, Some(Policy::Review));
         assert_eq!(m.lint.ignore, vec!["NT305"]);
         assert_eq!(m.publish.targets["public"].plugins["documents"], vec!["pdf"]);
@@ -480,7 +480,7 @@ documents = ["pdf"]
 
     #[test]
     fn inline_item() {
-        let s = WbSkill { version: Some("latest".into()), agents: Some(vec!["claude".into()]), ..Default::default() };
+        let s = UserSkill { version: Some("latest".into()), agents: Some(vec!["claude".into()]), ..Default::default() };
         let item = to_inline(&s).unwrap();
         let mut doc = DocumentMut::new();
         table_mut(&mut doc, &["skills"]).insert("github.com/a/b//c", item);

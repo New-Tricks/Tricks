@@ -1,5 +1,5 @@
 //! `tricks pr <skill>` (spec §11): contribute a customization back upstream. Only
-//! the B → C change of that one skill leaves the workspace.
+//! the B → C change of that one skill leaves the source repo.
 
 use crate::ctx::Ctx;
 use crate::git::{self, git};
@@ -7,8 +7,8 @@ use crate::id::SkillId;
 use crate::merge;
 use crate::resolve::{Fetch, open_mirror};
 use crate::skill;
+use crate::source_repo;
 use crate::store;
-use crate::workspace;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use std::process::Command;
@@ -27,7 +27,7 @@ pub struct PrReport {
 }
 
 pub fn pr(ctx: &Ctx, name: &str, title: Option<&str>, body: Option<&str>, dry_run: bool) -> Result<PrReport> {
-    let ws = workspace::require(ctx)?;
+    let ws = source_repo::require(ctx)?;
     let s = ws.skill(name)?.clone();
     let upstream = s.upstream.clone().context("this skill has no upstream (local original); nothing to contribute back")?;
     let locked = ws.lock.skills.get(name).cloned().unwrap_or_default();

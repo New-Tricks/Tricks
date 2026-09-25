@@ -5,7 +5,7 @@ use crate::ctx::Ctx;
 use crate::id::valid_skill_name;
 use crate::risk::{self, RiskReport};
 use crate::skill::SkillDoc;
-use crate::workspace::Workspace;
+use crate::source_repo::SourceRepo;
 use anyhow::Result;
 use regex::Regex;
 use serde::Serialize;
@@ -50,7 +50,7 @@ pub const RULES: &[(&str, &str, &str)] = &[
     ("NT206", "warning", "SKILL.md body longer than ~5000 tokens"),
     ("NT301", "warning", "description lacks a \"use when …\" trigger clause"),
     ("NT302", "warning", "description shorter than 60 characters"),
-    ("NT303", "error", "duplicate skill name in workspace"),
+    ("NT303", "error", "duplicate skill name in source repo"),
     ("NT304", "warning", "description nearly duplicates another skill's (they will compete for triggering)"),
     ("NT305", "warning", "description written in first or second person"),
     ("NT401", "warning", "agent-specific frontmatter key but that agent is not targeted"),
@@ -383,11 +383,11 @@ fn jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
     if u == 0.0 { 0.0 } else { i / u }
 }
 
-pub fn lint_workspace(ctx: &Ctx, ws: &Workspace, names: &[String]) -> Result<LintReport> {
-    lint_workspace_opts(ctx, ws, names, false)
+pub fn lint_repo(ctx: &Ctx, ws: &SourceRepo, names: &[String]) -> Result<LintReport> {
+    lint_repo_opts(ctx, ws, names, false)
 }
 
-pub fn lint_workspace_opts(ctx: &Ctx, ws: &Workspace, names: &[String], force_strict: bool) -> Result<LintReport> {
+pub fn lint_repo_opts(ctx: &Ctx, ws: &SourceRepo, names: &[String], force_strict: bool) -> Result<LintReport> {
     let agents: Vec<String> = ws.agents(ctx)?.iter().map(|a| a.id.to_string()).collect();
     let mut rep = LintReport::default();
     let mut descs: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
@@ -465,7 +465,7 @@ pub fn lint_workspace_opts(ctx: &Ctx, ws: &Workspace, names: &[String], force_st
     Ok(rep)
 }
 
-/// Lint a directory outside a workspace.
+/// Lint a directory outside a source repo.
 pub fn lint_path(dir: &Path, strict: bool) -> LintReport {
     let name = dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
     let lc = LintContext {

@@ -288,7 +288,7 @@ pub fn lookup(ctx: &Ctx, id: &str) -> Result<(String, Entry)> {
         })
         .ok();
     let (origin, url, digest, kind) =
-        row.with_context(|| format!("{id} is not in the index; add its site with `tricks source add <url> --kind wellknown`"))?;
+        row.with_context(|| format!("{id} is not in the index; add its site with `tricks catalog add <url> --kind wellknown`"))?;
     let name = id.rsplit("//").next().unwrap_or(id).to_string();
     Ok((
         origin,

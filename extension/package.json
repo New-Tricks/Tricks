@@ -50,9 +50,9 @@
           "type": "webview"
         },
         {
-          "id": "tricks.workspace",
-          "name": "Workspace",
-          "when": "tricks.hasWorkspace"
+          "id": "tricks.sourceRepo",
+          "name": "Source Repo",
+          "when": "tricks.hasSourceRepo"
         },
         {
           "id": "tricks.installed",
@@ -63,7 +63,7 @@
     "viewsWelcome": [
       {
         "view": "tricks.installed",
-        "contents": "No skills installed yet.\nSearch in Discover, then install a skill for your agents.\n[Initialize a workspace](command:tricks.initWorkspace) to author and customize skills."
+        "contents": "No skills installed yet.\nSearch in Discover, then install a skill for your agents.\n[Initialize a source repo](command:tricks.initSourceRepo) to author and customize skills."
       }
     ],
     "commands": [
@@ -98,19 +98,19 @@
       },
       {
         "command": "tricks.vendor",
-        "title": "Vendor into Workspace",
+        "title": "Vendor into Source Repo",
         "category": "New Tricks",
         "icon": "$(repo-forked)"
       },
       {
         "command": "tricks.remove",
-        "title": "Remove from Workbench",
+        "title": "Remove from User Skills",
         "category": "New Tricks",
         "icon": "$(trash)"
       },
       {
-        "command": "tricks.workbenchUpdate",
-        "title": "Review Workbench Updates",
+        "command": "tricks.userUpdate",
+        "title": "Review User Skill Updates",
         "category": "New Tricks"
       },
       {
@@ -119,8 +119,8 @@
         "category": "New Tricks"
       },
       {
-        "command": "tricks.initWorkspace",
-        "title": "Initialize Workspace Here",
+        "command": "tricks.initSourceRepo",
+        "title": "Initialize Source Repo Here",
         "category": "New Tricks"
       },
       {
@@ -131,7 +131,7 @@
       },
       {
         "command": "tricks.lint",
-        "title": "Lint Workspace",
+        "title": "Lint Source Repo",
         "category": "New Tricks",
         "icon": "$(checklist)"
       },
@@ -226,99 +226,99 @@
       "view/title": [
         {
           "command": "tricks.refresh",
-          "when": "view == tricks.workspace || view == tricks.installed",
+          "when": "view == tricks.sourceRepo || view == tricks.installed",
           "group": "navigation"
         },
         {
           "command": "tricks.newSkill",
-          "when": "view == tricks.workspace",
+          "when": "view == tricks.sourceRepo",
           "group": "navigation"
         },
         {
           "command": "tricks.lint",
-          "when": "view == tricks.workspace",
+          "when": "view == tricks.sourceRepo",
           "group": "navigation"
         },
         {
           "command": "tricks.publish",
-          "when": "view == tricks.workspace",
+          "when": "view == tricks.sourceRepo",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
           "command": "tricks.openSkill",
-          "when": "view == tricks.workspace && viewItem =~ /wsSkill/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
           "group": "1_open@1"
         },
         {
           "command": "tricks.changes",
-          "when": "view == tricks.workspace && viewItem =~ /vendored/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /vendored/",
           "group": "inline"
         },
         {
           "command": "tricks.update",
-          "when": "view == tricks.workspace && viewItem =~ /updateReady/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /updateReady/",
           "group": "inline"
         },
         {
           "command": "tricks.editOnBranch",
-          "when": "view == tricks.workspace && viewItem =~ /wsSkill/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
           "group": "2_edit@1"
         },
         {
           "command": "tricks.commit",
-          "when": "view == tricks.workspace && viewItem =~ /wsSkill/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
           "group": "2_edit@2"
         },
         {
           "command": "tricks.useVariant",
-          "when": "view == tricks.workspace && viewItem =~ /wsSkill/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
           "group": "2_edit@3"
         },
         {
           "command": "tricks.linkToProject",
-          "when": "view == tricks.workspace && viewItem =~ /wsSkill/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /repoSkill/",
           "group": "3_deploy@1"
         },
         {
           "command": "tricks.changes",
-          "when": "view == tricks.workspace && viewItem =~ /vendored/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /vendored/",
           "group": "4_upstream@1"
         },
         {
           "command": "tricks.update",
-          "when": "view == tricks.workspace && viewItem =~ /vendored/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /vendored/",
           "group": "4_upstream@2"
         },
         {
           "command": "tricks.updateContinue",
-          "when": "view == tricks.workspace && viewItem =~ /merging/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /merging/",
           "group": "4_upstream@3"
         },
         {
           "command": "tricks.updateAbort",
-          "when": "view == tricks.workspace && viewItem =~ /merging/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /merging/",
           "group": "4_upstream@4"
         },
         {
           "command": "tricks.pr",
-          "when": "view == tricks.workspace && viewItem =~ /vendored/",
+          "when": "view == tricks.sourceRepo && viewItem =~ /vendored/",
           "group": "4_upstream@5"
         },
         {
           "command": "tricks.preview",
-          "when": "view == tricks.installed && viewItem == wbSkill",
+          "when": "view == tricks.installed && viewItem == userSkill",
           "group": "inline"
         },
         {
           "command": "tricks.remove",
-          "when": "view == tricks.installed && viewItem == wbSkill",
+          "when": "view == tricks.installed && viewItem == userSkill",
           "group": "inline"
         },
         {
           "command": "tricks.rollback",
-          "when": "view == tricks.installed && viewItem == wbSkill",
+          "when": "view == tricks.installed && viewItem == userSkill",
           "group": "1@1"
         }
       ],
@@ -350,7 +350,7 @@
           "type": "number",
           "default": 60,
           "minimum": 5,
-          "description": "How often to check for skill updates while VS Code is open. Fetches are throttled by the workbench fetch_interval."
+          "description": "How often to check for skill updates while VS Code is open. Fetches are throttled by the fetch_interval in your user config."
         },
         "tricks.useGitHubSession": {
           "type": "boolean",

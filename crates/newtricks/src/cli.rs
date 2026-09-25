@@ -43,13 +43,14 @@ pub struct SearchArgs {
     /// allow | weak-copyleft | strong-copyleft | non-commercial | block | unknown
     #[arg(long)]
     pub license: Option<String>,
-    #[arg(long)]
+    /// Only skills listed in this catalog (or from this repository)
+    #[arg(long = "catalog")]
     pub source: Option<String>,
     #[arg(long)]
     pub owner: Option<String>,
     #[arg(long)]
     pub category: Option<String>,
-    /// Only skills installed in the workbench
+    /// Only skills installed at user scope
     #[arg(long)]
     pub installed: bool,
     /// Exclude skills that ship scripts
@@ -57,7 +58,7 @@ pub struct SearchArgs {
     pub no_scripts: bool,
     #[arg(long, default_value_t = 20)]
     pub limit: usize,
-    /// Re-index all sources first
+    /// Re-index all catalogs first
     #[arg(long)]
     pub refresh: bool,
     /// Skip live-query adapters (skills.sh, GitHub code search)
@@ -66,7 +67,7 @@ pub struct SearchArgs {
 }
 
 #[derive(Subcommand)]
-pub enum SourceCmd {
+pub enum CatalogCmd {
     /// Add a repository, marketplace, well-known site or apm.yml/skills-lock.json
     Add {
         input: String,
@@ -74,17 +75,17 @@ pub enum SourceCmd {
         #[arg(long)]
         kind: Option<String>,
     },
-    /// List sources
+    /// List catalogs
     List,
-    /// Remove (or disable a default) source
+    /// Remove (or disable a default) catalog
     Remove { input: String },
-    /// Re-index sources now
-    Refresh { source: Option<String> },
+    /// Re-index catalogs now
+    Refresh { catalog: Option<String> },
 }
 
 #[derive(Subcommand)]
 pub enum Cmd {
-    /// Search skills across all sources
+    /// Search skills across all catalogs
     Search(SearchArgs),
     /// Show a skill: metadata, files, licence, risk, body
     Show {
@@ -93,9 +94,9 @@ pub enum Cmd {
         #[arg(long)]
         file: Option<String>,
     },
-    /// Manage search sources
+    /// Manage the catalogs search draws on
     #[command(subcommand)]
-    Source(SourceCmd),
+    Catalog(CatalogCmd),
     /// Install a skill at user scope for agents
     Add {
         skill: String,
@@ -109,19 +110,19 @@ pub enum Cmd {
         #[arg(long)]
         shadow: bool,
     },
-    /// Remove a workbench skill and its placements
+    /// Remove a user skill and its placements
     Remove { skill: String },
-    /// Sync installs to the manifest (in a workspace: link workspace skills in dev mode)
+    /// Sync installs to the manifest (in a source repo: link its skills in dev mode)
     Install {
         #[arg(long)]
         frozen: bool,
-        /// Operate on the workbench even inside a workspace
+        /// Operate at user scope even inside a source repo
         #[arg(long, short = 'g')]
         global: bool,
         #[arg(long, value_delimiter = ',')]
         agents: Vec<String>,
     },
-    /// Apply updates (workbench), or merge upstream changes (workspace)
+    /// Apply updates (user scope), or merge upstream changes (source repo)
     Update {
         skill: Option<String>,
         #[arg(long, short = 'g')]
@@ -138,9 +139,9 @@ pub enum Cmd {
     },
     /// Installed skills, placements, test links and pending work
     Status,
-    /// Roll a workbench skill back to its previous revision (and pin it)
+    /// Roll a user skill back to its previous revision (and pin it)
     Rollback { skill: String },
-    /// Set the update policy of a workbench skill
+    /// Set the update policy of a user skill
     Policy { skill: String, policy: String },
     /// Deploy a skill into a project or globally for testing
     Link {
@@ -195,7 +196,7 @@ pub enum Cmd {
         check: bool,
     },
     #[command(flatten)]
-    Workspace(crate::cli_ws::WsCmd),
+    SourceRepo(crate::cli_repo::RepoCmd),
 }
 
 pub fn main() -> std::process::ExitCode {
@@ -251,19 +252,19 @@ fn run(cli: Cli) -> Result<()> {
                 emit(json, &r, print_show);
             }
         },
-        Cmd::Source(sc) => match sc {
-            SourceCmd::Add { input, kind } => {
-                let (key, k) = crate::sources::add(&ctx, &input, kind.as_deref())?;
-                let rep = crate::sources::refresh(&ctx, true, Some(&key))?;
-                emit(json, &serde_json::json!({ "source": key, "kind": k, "indexed": rep.indexed, "errors": rep.errors }), |_| {
+        Cmd::Catalog(sc) => match sc {
+            CatalogCmd::Add { input, kind } => {
+                let (key, k) = crate::catalogs::add(&ctx, &input, kind.as_deref())?;
+                let rep = crate::catalogs::refresh(&ctx, true, Some(&key))?;
+                emit(json, &serde_json::json!({ "catalog": key, "kind": k, "indexed": rep.indexed, "errors": rep.errors }), |_| {
                     println!("added {key} ({})", k.as_str());
                     for (s, n) in &rep.indexed {
                         println!("  indexed {n} skill(s) from {s}");
                     }
                 });
             }
-            SourceCmd::List => {
-                let l = crate::sources::list(&ctx)?;
+            CatalogCmd::List => {
+                let l = crate::catalogs::list(&ctx)?;
                 emit(json, &l, |l| {
                     for s in l {
                         let when = s.last_indexed.map(ago).unwrap_or_else(|| "never".into());
@@ -277,17 +278,17 @@ fn run(cli: Cli) -> Result<()> {
                             if s.disabled { "  [disabled]" } else { "" }
                         );
                     }
-                    let live = crate::workbench::load_manifest(&ctx).map(|m| m.settings.live).unwrap_or_default();
+                    let live = crate::user::load_manifest(&ctx).map(|m| m.settings.live).unwrap_or_default();
                     let gh = if ctx.gh.token("github.com").is_some() { "" } else { " (GitHub code search needs `gh auth login`)" };
                     println!("live: {}{gh}", live.join(", "));
                 });
             }
-            SourceCmd::Remove { input } => {
-                let k = crate::sources::remove(&ctx, &input)?;
+            CatalogCmd::Remove { input } => {
+                let k = crate::catalogs::remove(&ctx, &input)?;
                 emit(json, &serde_json::json!({ "removed": k }), |_| println!("removed {k}"));
             }
-            SourceCmd::Refresh { source } => {
-                let rep = crate::sources::refresh(&ctx, true, source.as_deref())?;
+            CatalogCmd::Refresh { catalog } => {
+                let rep = crate::catalogs::refresh(&ctx, true, catalog.as_deref())?;
                 emit(json, &rep, |r| {
                     for (s, n) in &r.indexed {
                         println!("indexed {n:>4} skill(s) from {s}");
@@ -300,7 +301,7 @@ fn run(cli: Cli) -> Result<()> {
         },
         Cmd::Add { skill, agents, update, copy, shadow } => {
             let policy = update.as_deref().map(Policy::parse).transpose()?;
-            let r = crate::workbench::add(&ctx, &skill, &agents, policy, copy, shadow)?;
+            let r = crate::user::add(&ctx, &skill, &agents, policy, copy, shadow)?;
             emit(json, &r, |r| {
                 println!("installed {} ({})", r.name, r.canonical);
                 for p in &r.placements {
@@ -315,7 +316,7 @@ fn run(cli: Cli) -> Result<()> {
             });
         }
         Cmd::Remove { skill } => {
-            let r = crate::workbench::remove(&ctx, &skill)?;
+            let r = crate::user::remove(&ctx, &skill)?;
             emit(json, &r, |r| {
                 println!("removed {skill}");
                 for p in r {
@@ -324,19 +325,19 @@ fn run(cli: Cli) -> Result<()> {
             });
         }
         Cmd::Install { frozen, global, agents } => {
-            if !global && let Some(ws) = crate::workspace::current(&ctx)? {
-                let r = crate::workspace::install_dev(&ctx, &ws, &agents)?;
-                emit(json, &r, crate::cli_ws::print_ws_install);
+            if !global && let Some(ws) = crate::source_repo::current(&ctx)? {
+                let r = crate::source_repo::install_dev(&ctx, &ws, &agents)?;
+                emit(json, &r, crate::cli_repo::print_repo_install);
                 return Ok(());
             }
-            let r = crate::workbench::install(&ctx, frozen)?;
+            let r = crate::user::install(&ctx, frozen)?;
             emit(json, &r, |r| {
                 for s in &r.skills {
                     let d = s.detail.as_deref().map(|d| format!("  {d}")).unwrap_or_default();
                     println!("{:<14} {}{}", s.action, if s.name.is_empty() { &s.id } else { &s.name }, d);
                 }
                 if r.skills.is_empty() {
-                    println!("no skills in the workbench manifest; add one with `tricks add owner/repo//skill`");
+                    println!("no skills in the user config; add one with `tricks add owner/repo//skill`");
                 }
                 if r.updates_ready > 0 {
                     println!("{} update(s) ready — run `tricks update`", r.updates_ready);
@@ -344,12 +345,12 @@ fn run(cli: Cli) -> Result<()> {
             });
         }
         Cmd::Update { skill, global, cont, abort } => {
-            if !global && let Some(ws) = crate::workspace::current(&ctx)? {
-                let r = crate::workspace::update(&ctx, &ws, skill.as_deref(), cont, abort)?;
-                emit(json, &r, crate::cli_ws::print_ws_update);
+            if !global && let Some(ws) = crate::source_repo::current(&ctx)? {
+                let r = crate::source_repo::update(&ctx, &ws, skill.as_deref(), cont, abort)?;
+                emit(json, &r, crate::cli_repo::print_repo_update);
                 return Ok(());
             }
-            let r = crate::workbench::update(&ctx, skill.as_deref())?;
+            let r = crate::user::update(&ctx, skill.as_deref())?;
             emit(json, &r, |r| {
                 if r.is_empty() {
                     println!("everything is up to date");
@@ -363,12 +364,12 @@ fn run(cli: Cli) -> Result<()> {
             });
         }
         Cmd::Outdated { global } => {
-            if !global && let Some(ws) = crate::workspace::current(&ctx)? {
-                let r = crate::workspace::outdated(&ctx, &ws)?;
-                emit(json, &r, crate::cli_ws::print_ws_outdated);
+            if !global && let Some(ws) = crate::source_repo::current(&ctx)? {
+                let r = crate::source_repo::outdated(&ctx, &ws)?;
+                emit(json, &r, crate::cli_repo::print_repo_outdated);
                 return Ok(());
             }
-            let r = crate::workbench::outdated(&ctx)?;
+            let r = crate::user::outdated(&ctx)?;
             emit(json, &r, |r| {
                 if r.is_empty() {
                     println!("everything is up to date");
@@ -382,12 +383,12 @@ fn run(cli: Cli) -> Result<()> {
             });
         }
         Cmd::Status => {
-            let r = crate::workbench::status(&ctx)?;
-            let ws = crate::workspace::current(&ctx)?.map(|w| crate::workspace::status(&ctx, &w)).transpose()?;
-            emit(json, &serde_json::json!({ "workbench": r, "workspace": ws }), |_| print_status(&r, ws.as_ref()));
+            let r = crate::user::status(&ctx)?;
+            let ws = crate::source_repo::current(&ctx)?.map(|w| crate::source_repo::status(&ctx, &w)).transpose()?;
+            emit(json, &serde_json::json!({ "user": r, "source_repo": ws }), |_| print_status(&r, ws.as_ref()));
         }
         Cmd::Rollback { skill } => {
-            let r = crate::workbench::rollback(&ctx, &skill)?;
+            let r = crate::user::rollback(&ctx, &skill)?;
             emit(json, &r, |r| {
                 println!(
                     "rolled back {} {} → {} (pinned; `tricks policy {skill} review` to resume updates)",
@@ -399,7 +400,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Policy { skill, policy } => {
             let p = Policy::parse(&policy)?;
-            let id = crate::workbench::set_policy(&ctx, &skill, p)?;
+            let id = crate::user::set_policy(&ctx, &skill, p)?;
             emit(json, &serde_json::json!({ "id": id, "update": p.as_str() }), |_| println!("{id}: update = {}", p.as_str()));
         }
         Cmd::Link { skill, to, global, agents, copy, shadow } => {
@@ -484,7 +485,7 @@ fn run(cli: Cli) -> Result<()> {
             emit(json, &r, |r| println!("{}", r.message));
         }
         Cmd::Serve { .. } => unreachable!(),
-        Cmd::Workspace(w) => crate::cli_ws::run(&ctx, w)?,
+        Cmd::SourceRepo(w) => crate::cli_repo::run(&ctx, w)?,
     }
     Ok(())
 }
@@ -515,9 +516,9 @@ fn first_run_offer(ctx: &Ctx, cmd: &Cmd, yes: bool) {
 
 pub fn do_search(ctx: &Ctx, a: &SearchArgs) -> Result<Vec<crate::index::SearchResult>> {
     let q = a.query.join(" ");
-    let _ = crate::sources::refresh(ctx, a.refresh, None)?;
+    let _ = crate::catalogs::refresh(ctx, a.refresh, None)?;
     if !a.no_live && !ctx.opts.offline && !q.trim().is_empty() {
-        let live = crate::workbench::load_manifest(ctx)?.settings.live;
+        let live = crate::user::load_manifest(ctx)?.settings.live;
         let on = |c: &str| live.iter().any(|x| x == c);
         let report = |name: &str, r: Result<usize>| {
             if let Err(e) = r {
@@ -525,7 +526,7 @@ pub fn do_search(ctx: &Ctx, a: &SearchArgs) -> Result<Vec<crate::index::SearchRe
             }
         };
         if on("skills.sh") {
-            report("skills.sh", crate::sources::live_skills_sh(ctx, &q, 6));
+            report("skills.sh", crate::catalogs::live_skills_sh(ctx, &q, 6));
         }
         if on("tessl") {
             report("Tessl", crate::tessl::live_search(ctx, &q, 20));
@@ -534,7 +535,7 @@ pub fn do_search(ctx: &Ctx, a: &SearchArgs) -> Result<Vec<crate::index::SearchRe
             report("ClawHub", crate::clawhub::live_search(ctx, &q, 20));
         }
         if on("github") {
-            report("GitHub code search", crate::sources::live_github_search(ctx, &q, 5));
+            report("GitHub code search", crate::catalogs::live_github_search(ctx, &q, 5));
         }
     }
     let f = Filters {
@@ -670,11 +671,11 @@ fn print_show(r: &crate::inspect::ShowReport) {
     println!("\n{}", r.body.trim_end());
 }
 
-fn print_status(r: &crate::workbench::StatusReport, ws: Option<&crate::workspace::WsStatus>) {
+fn print_status(r: &crate::user::StatusReport, ws: Option<&crate::source_repo::RepoStatus>) {
     if r.skills.is_empty() {
-        println!("workbench: no skills installed");
+        println!("user scope: no skills installed");
     } else {
-        println!("workbench skills:");
+        println!("user skills:");
     }
     for s in &r.skills {
         let mut notes = vec![s.policy.clone()];
@@ -704,6 +705,6 @@ fn print_status(r: &crate::workbench::StatusReport, ws: Option<&crate::workspace
         println!("interrupted operation: {u} (re-run the command to recover)");
     }
     if let Some(w) = ws {
-        crate::cli_ws::print_ws_status(w);
+        crate::cli_repo::print_repo_status(w);
     }
 }

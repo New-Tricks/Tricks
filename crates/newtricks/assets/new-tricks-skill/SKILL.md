@@ -8,7 +8,7 @@ metadata:
 
 # Working with skills through New Tricks
 
-New Tricks is the user's workbench for agent skills. Skills are identified as
+New Tricks is the user's design-time workbench for agent skills. Skills are identified as
 `owner/repo//name[@ref]` (the `//` is required), e.g. `anthropics/skills//pdf`.
 
 ## What you may do without asking

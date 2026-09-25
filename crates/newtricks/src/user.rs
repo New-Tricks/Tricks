@@ -1,8 +1,8 @@
-//! Workbench installs (spec §8, §9): user-scope skills, update policies, freshness
+//! User installs (spec §8, §9): user-scope skills, update policies, freshness
 //! without a scheduler, lock semantics and rollback.
 
 use crate::agents::{self, Agent};
-use crate::config::{self, LockedSkill, Policy, WbSkill, WorkbenchLock, WorkbenchManifest};
+use crate::config::{self, LockedSkill, Policy, UserLock, UserManifest, UserSkill};
 use crate::ctx::Ctx;
 use crate::deploy::{self, PlaceRequest, Scope};
 use crate::git::git;
@@ -16,24 +16,24 @@ use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
-pub fn load_manifest(ctx: &Ctx) -> Result<WorkbenchManifest> {
-    WorkbenchManifest::load(&ctx.paths.workbench_manifest())
+pub fn load_manifest(ctx: &Ctx) -> Result<UserManifest> {
+    UserManifest::load(&ctx.paths.user_manifest())
 }
 
-pub fn load_lock(ctx: &Ctx) -> Result<WorkbenchLock> {
-    WorkbenchLock::load(&ctx.paths.workbench_lock())
+pub fn load_lock(ctx: &Ctx) -> Result<UserLock> {
+    UserLock::load(&ctx.paths.user_lock())
 }
 
 pub fn installed_ids(ctx: &Ctx) -> Result<BTreeSet<String>> {
     Ok(load_lock(ctx)?.skills.into_iter().map(|s| s.id).collect())
 }
 
-pub fn default_agents(m: &WorkbenchManifest) -> Result<Vec<&'static Agent>> {
+pub fn default_agents(m: &UserManifest) -> Result<Vec<&'static Agent>> {
     let a = agents::parse_list(&m.settings.agents)?;
     Ok(if a.is_empty() { vec![agents::get("claude")?] } else { a })
 }
 
-fn skill_agents(m: &WorkbenchManifest, s: &WbSkill) -> Result<Vec<&'static Agent>> {
+fn skill_agents(m: &UserManifest, s: &UserSkill) -> Result<Vec<&'static Agent>> {
     match &s.agents {
         Some(a) if !a.is_empty() => agents::parse_list(a),
         _ => default_agents(m),
@@ -48,7 +48,7 @@ pub fn placement_name(name: &str, id: &SkillId) -> String {
 /// The `auto` policy is only allowed for sources owned by the user or their orgs.
 pub fn ensure_trusted_for_auto(ctx: &Ctx, id: &SkillId) -> Result<()> {
     let owner = id.source.owner();
-    let ident = crate::sources::cached_identity(ctx, &id.source.host);
+    let ident = crate::catalogs::cached_identity(ctx, &id.source.host);
     match ident {
         Some((login, orgs)) if owner.eq_ignore_ascii_case(&login) || orgs.iter().any(|o| o.eq_ignore_ascii_case(owner)) => Ok(()),
         Some(_) => bail!(
@@ -72,13 +72,13 @@ pub struct AddReport {
     pub risk: Vec<String>,
 }
 
-fn requested_from_spec(spec: &SkillSpec, r: &ResolvedSkill) -> WbSkill {
+fn requested_from_spec(spec: &SkillSpec, r: &ResolvedSkill) -> UserSkill {
     match (&spec.reference, r.reference.kind.as_str()) {
-        (None, _) => WbSkill { version: Some("latest".into()), ..Default::default() },
-        (Some(x), _) if x == "latest" => WbSkill { version: Some("latest".into()), ..Default::default() },
-        (Some(_), "tag") => WbSkill { version: Some(r.reference.name.clone()), ..Default::default() },
-        (Some(_), "branch") => WbSkill { branch: Some(r.reference.name.clone()), ..Default::default() },
-        (Some(_), _) => WbSkill { rev: Some(r.reference.commit.clone()), ..Default::default() },
+        (None, _) => UserSkill { version: Some("latest".into()), ..Default::default() },
+        (Some(x), _) if x == "latest" => UserSkill { version: Some("latest".into()), ..Default::default() },
+        (Some(_), "tag") => UserSkill { version: Some(r.reference.name.clone()), ..Default::default() },
+        (Some(_), "branch") => UserSkill { branch: Some(r.reference.name.clone()), ..Default::default() },
+        (Some(_), _) => UserSkill { rev: Some(r.reference.commit.clone()), ..Default::default() },
     }
 }
 
@@ -120,9 +120,9 @@ fn resolve_following(ctx: &Ctx, id: &SkillId, requested: &str, fetch: Fetch, bas
 }
 
 /// Move an installed skill to its new canonical id after an upstream rename.
-fn migrate_id(ctx: &Ctx, lock: &mut WorkbenchLock, old_s: &str, old: &SkillId, new: &SkillId) -> Result<String> {
+fn migrate_id(ctx: &Ctx, lock: &mut UserLock, old_s: &str, old: &SkillId, new: &SkillId) -> Result<String> {
     let new_s = new.to_string();
-    let path = ctx.paths.workbench_manifest();
+    let path = ctx.paths.user_manifest();
     let mut doc = config::load_doc(&path)?;
     let t = config::table_mut(&mut doc, &["skills"]);
     if let Some(item) = t.remove(old_s) {
@@ -137,7 +137,7 @@ fn migrate_id(ctx: &Ctx, lock: &mut WorkbenchLock, old_s: &str, old: &SkillId, n
         l.id = new_s.clone();
         lock.upsert(l);
     }
-    lock.save(&ctx.paths.workbench_lock())?;
+    lock.save(&ctx.paths.user_lock())?;
     for table in ["placements", "pending_updates", "auto_deployed", "deployments"] {
         ctx.state.conn.execute(&format!("UPDATE {table} SET skill=?1 WHERE skill=?2"), params![new_s, old_s])?;
     }
@@ -169,7 +169,7 @@ pub fn add(ctx: &Ctx, input: &str, agent_names: &[String], policy: Option<Policy
             ctx,
             &PlaceRequest {
                 skill: r.id.to_string(),
-                origin: "workbench",
+                origin: "user",
                 agent: a,
                 scope: Scope::Global,
                 name: name.clone(),
@@ -191,13 +191,13 @@ pub fn add(ctx: &Ctx, input: &str, agent_names: &[String], policy: Option<Policy
     if copy {
         entry.mode = Some("copy".into());
     }
-    let path = ctx.paths.workbench_manifest();
+    let path = ctx.paths.user_manifest();
     let mut doc = config::load_doc(&path)?;
     config::table_mut(&mut doc, &["skills"]).insert(&r.id.to_string(), config::to_inline(&entry)?);
     config::save_doc(&path, &doc)?;
     let mut lock = load_lock(ctx)?;
     lock.upsert(locked_from(&r));
-    lock.save(&ctx.paths.workbench_lock())?;
+    lock.save(&ctx.paths.user_lock())?;
     clear_pending(ctx, &r.id.to_string())?;
 
     Ok(AddReport {
@@ -233,7 +233,7 @@ fn add_hosted(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], policy: Optio
             ctx,
             &PlaceRequest {
                 skill: id.to_string(),
-                origin: "workbench",
+                origin: "user",
                 agent: a,
                 scope: Scope::Global,
                 name: name.clone(),
@@ -246,9 +246,9 @@ fn add_hosted(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], policy: Optio
         )?;
         placements.push(format!("{} ({})", p.path, p.mode));
     }
-    let path = ctx.paths.workbench_manifest();
+    let path = ctx.paths.user_manifest();
     let mut doc = config::load_doc(&path)?;
-    let mut wb = WbSkill { version: Some("latest".into()), ..Default::default() };
+    let mut wb = UserSkill { version: Some("latest".into()), ..Default::default() };
     if !agent_names.is_empty() {
         wb.agents = Some(agents_sel.iter().map(|a| a.id.to_string()).collect());
     }
@@ -257,7 +257,7 @@ fn add_hosted(ctx: &Ctx, spec: &SkillSpec, agent_names: &[String], policy: Optio
     config::save_doc(&path, &doc)?;
     let mut lock = load_lock(ctx)?;
     lock.upsert(hosted_locked(&id, &name, &f, &tree));
-    lock.save(&ctx.paths.workbench_lock())?;
+    lock.save(&ctx.paths.user_lock())?;
     Ok(AddReport {
         id: id.to_string(),
         canonical: format!("{id}@{}", f.label),
@@ -297,7 +297,7 @@ fn fetch_hosted_into_store(ctx: &Ctx, id: &SkillId, version: Option<&str>) -> Re
 }
 
 /// Find an installed skill by canonical id, short id or name.
-pub fn find_installed(ctx: &Ctx, input: &str) -> Result<(String, WbSkill)> {
+pub fn find_installed(ctx: &Ctx, input: &str) -> Result<(String, UserSkill)> {
     let m = load_manifest(ctx)?;
     if let Some(s) = m.skills.get(input) {
         return Ok((input.to_string(), s.clone()));
@@ -324,7 +324,7 @@ pub fn find_installed(ctx: &Ctx, input: &str) -> Result<(String, WbSkill)> {
             let s = m.skills.get(&id).cloned().unwrap_or_default();
             Ok((id, s))
         }
-        0 => bail!("`{input}` is not installed in the workbench"),
+        0 => bail!("`{input}` is not installed at user scope"),
         _ => bail!("`{input}` matches several installed skills: {}", hits.iter().map(|h| h.id.as_str()).collect::<Vec<_>>().join(", ")),
     }
 }
@@ -332,17 +332,17 @@ pub fn find_installed(ctx: &Ctx, input: &str) -> Result<(String, WbSkill)> {
 pub fn remove(ctx: &Ctx, input: &str) -> Result<Vec<String>> {
     let (id, _) = find_installed(ctx, input)?;
     let mut removed = Vec::new();
-    for p in ctx.state.placements("WHERE skill=?1 AND origin='workbench'", &[&id])? {
+    for p in ctx.state.placements("WHERE skill=?1 AND origin='user'", &[&id])? {
         deploy::remove_placement(ctx, &p)?;
         removed.push(p.path);
     }
-    let path = ctx.paths.workbench_manifest();
+    let path = ctx.paths.user_manifest();
     let mut doc = config::load_doc(&path)?;
     config::table_mut(&mut doc, &["skills"]).remove(&id);
     config::save_doc(&path, &doc)?;
     let mut lock = load_lock(ctx)?;
     lock.remove(&id);
-    lock.save(&ctx.paths.workbench_lock())?;
+    lock.save(&ctx.paths.user_lock())?;
     clear_pending(ctx, &id)?;
     ctx.state.conn.execute("DELETE FROM auto_deployed WHERE skill=?1", [&id])?;
     Ok(removed)
@@ -365,7 +365,7 @@ fn sync_placements(
     commit: &str,
     copy: bool,
 ) -> Result<usize> {
-    let existing = ctx.state.placements("WHERE skill=?1 AND origin='workbench'", &[&id])?;
+    let existing = ctx.state.placements("WHERE skill=?1 AND origin='user'", &[&id])?;
     let mut changed = 0;
     for p in &existing {
         if !agents_sel.iter().any(|a| a.id == p.agent) {
@@ -383,7 +383,7 @@ fn sync_placements(
             ctx,
             &PlaceRequest {
                 skill: id.to_string(),
-                origin: "workbench",
+                origin: "user",
                 agent: a,
                 scope: Scope::Global,
                 name: name.to_string(),
@@ -438,7 +438,7 @@ pub fn install(ctx: &Ctx, frozen: bool) -> Result<InstallReport> {
             }),
         }
     }
-    lock.save(&ctx.paths.workbench_lock())?;
+    lock.save(&ctx.paths.user_lock())?;
     if let Ok(n) = crate::agentskill::refresh_if_outdated(ctx)
         && n > 0
     {
@@ -448,14 +448,7 @@ pub fn install(ctx: &Ctx, frozen: bool) -> Result<InstallReport> {
     Ok(rep)
 }
 
-fn install_one(
-    ctx: &Ctx,
-    m: &WorkbenchManifest,
-    lock: &mut WorkbenchLock,
-    id_s: &str,
-    entry: &WbSkill,
-    frozen: bool,
-) -> Result<InstallItem> {
+fn install_one(ctx: &Ctx, m: &UserManifest, lock: &mut UserLock, id_s: &str, entry: &UserSkill, frozen: bool) -> Result<InstallItem> {
     let id = SkillId::parse_canonical(id_s)?;
     if crate::hosted::kind(&id).is_some() {
         let l = lock.get(id_s).cloned().context("hosted skill missing from lock; re-add it")?;
@@ -728,7 +721,7 @@ pub fn update(ctx: &Ctx, only: Option<&str>) -> Result<Vec<UpdateItem>> {
             applied,
         });
     }
-    lock.save(&ctx.paths.workbench_lock())?;
+    lock.save(&ctx.paths.user_lock())?;
     Ok(out)
 }
 
@@ -857,8 +850,7 @@ pub fn status(ctx: &Ctx) -> Result<StatusReport> {
     let mut updates_ready = 0;
     for (id_s, entry) in &m.skills {
         let locked = lock.get(id_s);
-        let placements: Vec<PlacementInfo> =
-            ctx.state.placements("WHERE skill=?1 AND origin='workbench'", &[id_s])?.iter().map(info).collect();
+        let placements: Vec<PlacementInfo> = ctx.state.placements("WHERE skill=?1 AND origin='user'", &[id_s])?.iter().map(info).collect();
         let deployed = placements.first().and_then(|p| p.commit.clone());
         let pending: Option<String> =
             ctx.state.conn.query_row("SELECT ref_name FROM pending_updates WHERE skill=?1", [id_s], |r| r.get(0)).optional()?;
@@ -881,7 +873,7 @@ pub fn status(ctx: &Ctx) -> Result<StatusReport> {
             placements,
         });
     }
-    let links = ctx.state.placements("WHERE origin<>'workbench'", &[])?.iter().map(info).collect();
+    let links = ctx.state.placements("WHERE origin<>'user'", &[])?.iter().map(info).collect();
     let unfinished = ctx.state.unfinished_ops()?.into_iter().map(|(id, op, d)| format!("#{id} {op} {d}")).collect();
     Ok(StatusReport { skills, links, updates_ready, unfinished_operations: unfinished })
 }
@@ -901,7 +893,7 @@ pub fn rollback(ctx: &Ctx, input: &str) -> Result<RollbackReport> {
     let locked = lock.get(&id_s).cloned().context("not in lock")?;
     let current_tree = ctx
         .state
-        .placements("WHERE skill=?1 AND origin='workbench'", &[&id_s])?
+        .placements("WHERE skill=?1 AND origin='user'", &[&id_s])?
         .first()
         .and_then(|p| p.tree.clone())
         .unwrap_or(locked.tree.clone());
@@ -938,8 +930,8 @@ pub fn rollback(ctx: &Ctx, input: &str) -> Result<RollbackReport> {
         tree,
         ..locked.clone()
     });
-    lock.save(&ctx.paths.workbench_lock())?;
-    let path = ctx.paths.workbench_manifest();
+    lock.save(&ctx.paths.user_lock())?;
+    let path = ctx.paths.user_manifest();
     let mut doc = config::load_doc(&path)?;
     let mut e = entry.clone();
     e.update = Some(Policy::Pinned);
@@ -957,7 +949,7 @@ pub fn set_policy(ctx: &Ctx, input: &str, policy: Policy) -> Result<String> {
         ensure_trusted_for_auto(ctx, &SkillId::parse_canonical(&id_s)?)?;
     }
     entry.update = Some(policy);
-    let path = ctx.paths.workbench_manifest();
+    let path = ctx.paths.user_manifest();
     let mut doc = config::load_doc(&path)?;
     config::table_mut(&mut doc, &["skills"]).insert(&id_s, config::to_inline(&entry)?);
     config::save_doc(&path, &doc)?;

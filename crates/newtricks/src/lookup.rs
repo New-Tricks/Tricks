@@ -1,5 +1,5 @@
 //! Turning user input into skill specs: canonical/short IDs, URLs (with slash-branch
-//! resolution) and bare names (workbench installs, then the search index).
+//! resolution) and bare names (user installs, then the search index).
 
 use crate::ctx::Ctx;
 use crate::id::{Normalized, SkillSpec, normalize_url};
@@ -34,7 +34,7 @@ pub fn spec_from_input(ctx: &Ctx, input: &str) -> Result<SkillSpec> {
         Some((n, r)) => (n, Some(r.to_string())),
         None => (input, None),
     };
-    let lock = crate::config::WorkbenchLock::load(&ctx.paths.workbench_lock())?;
+    let lock = crate::config::UserLock::load(&ctx.paths.user_lock())?;
     let installed: Vec<&crate::config::LockedSkill> =
         lock.skills.iter().filter(|s| s.name == name || s.id.rsplit('/').next() == Some(name)).collect();
     if installed.len() == 1 {

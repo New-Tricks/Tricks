@@ -89,7 +89,7 @@ fn pointers_from(resp: Response) -> Vec<Pointer> {
 
 /// Live search: index the pointed-to skills and attach Tessl signals.
 pub fn live_search(ctx: &Ctx, q: &str, max: usize) -> Result<usize> {
-    if ctx.opts.offline || q.trim().is_empty() || crate::sources::live_fresh(ctx, CATALOG, q)? {
+    if ctx.opts.offline || q.trim().is_empty() || crate::catalogs::live_fresh(ctx, CATALOG, q)? {
         return Ok(0);
     }
     let url = format!("{}/experimental/search?q={}&page%5Bsize%5D={max}", base_url(), encode_query(q));
@@ -100,7 +100,7 @@ pub fn live_search(ctx: &Ctx, q: &str, max: usize) -> Result<usize> {
     let resp: Response = serde_json::from_slice(&r.body)?;
     let pointers = pointers_from(resp);
     let jobs: Vec<(crate::id::SourceId, String)> = pointers.iter().map(|p| (p.id.source.clone(), p.id.path.clone())).collect();
-    crate::sources::ensure_pointers_indexed(ctx, &jobs);
+    crate::catalogs::ensure_pointers_indexed(ctx, &jobs);
     let mut n = 0;
     for p in pointers {
         let id = p.id.to_string();
@@ -109,7 +109,7 @@ pub fn live_search(ctx: &Ctx, q: &str, max: usize) -> Result<usize> {
             n += 1;
         }
     }
-    crate::sources::live_mark(ctx, CATALOG, q)?;
+    crate::catalogs::live_mark(ctx, CATALOG, q)?;
     Ok(n)
 }
 

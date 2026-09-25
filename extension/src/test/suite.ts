@@ -15,13 +15,13 @@ export async function run(): Promise<void> {
   // Status via the real binary over JSON-RPC.
   await api.refreshAll();
   const st = api.model.status;
-  assert.ok(st?.workspace, `no workspace in status: ${api.model.error}`);
-  const names = st.workspace.skills.map((s: any) => s.name).sort();
+  assert.ok(st?.source_repo, `no source repo in status: ${api.model.error}`);
+  const names = st.source_repo.skills.map((s: any) => s.name).sort();
   assert.deepStrictEqual(names, ["broken", "hello"]);
-  const hello = st.workspace.skills.find((s: any) => s.name === "hello");
+  const hello = st.source_repo.skills.find((s: any) => s.name === "hello");
   assert.strictEqual(hello.upstream, "github.com/acme/skills//skills/hello");
   // Lint diagnostics land in the Problems panel.
-  const root = st.workspace.root;
+  const root = st.source_repo.root;
   const diags = vscode.languages.getDiagnostics(vscode.Uri.file(path.join(root, "skills/broken/SKILL.md")));
   assert.ok(diags.some((d) => String(d.code) === "NT302"), `expected NT302, got ${diags.map((d) => d.code).join(",")}`);
   // Virtual documents: remote preview and base version.

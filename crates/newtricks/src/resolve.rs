@@ -36,7 +36,7 @@ impl ResolvedSkill {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fetch {
-    /// Fetch if the mirror is older than the workbench fetch interval.
+    /// Fetch if the mirror is older than the user fetch interval.
     IfStale,
     Always,
     Never,
@@ -147,7 +147,7 @@ pub fn open_mirror(ctx: &Ctx, src: &SourceId, fetch: Fetch) -> Result<Mirror> {
         }
         return Mirror::open(&ctx.paths, src, false);
     }
-    let interval = crate::workbench::load_manifest(ctx)?.fetch_interval();
+    let interval = crate::user::load_manifest(ctx)?.fetch_interval();
     let do_fetch = match fetch {
         Fetch::Always => true,
         Fetch::Never => false,

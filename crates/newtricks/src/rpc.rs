@@ -124,13 +124,13 @@ fn file_payload(bytes: &[u8]) -> Value {
 }
 
 pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
-    use crate::workspace as ws;
+    use crate::source_repo as ws;
     match method {
         "initialize" => {
             let w = ws::current(ctx)?;
             to(json!({
                 "version": env!("CARGO_PKG_VERSION"),
-                "workspace": w.map(|w| json!({ "root": w.root, "name": w.name })),
+                "source_repo": w.map(|w| json!({ "root": w.root, "name": w.name })),
                 "agents": crate::agents::AGENTS.iter().map(|a| a.id).collect::<Vec<_>>(),
             }))
         }
@@ -141,7 +141,7 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
                 agent: s(p, "agent").map(String::from),
                 trust: s(p, "trust").map(String::from),
                 license: s(p, "license").map(String::from),
-                source: s(p, "source").map(String::from),
+                source: s(p, "catalog").map(String::from),
                 owner: s(p, "owner").map(String::from),
                 category: s(p, "category").map(String::from),
                 installed: b(p, "installed"),
@@ -159,34 +159,34 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
             v["canonical"] = json!(canonical);
             Ok(v)
         }
-        "sources/list" => to(json!({ "sources": crate::sources::list(ctx)? })),
-        "sources/add" => {
-            let (key, kind) = crate::sources::add(ctx, req(p, "input")?, s(p, "kind"))?;
-            let rep = crate::sources::refresh(ctx, true, Some(&key))?;
-            to(json!({ "source": key, "kind": kind, "refresh": rep }))
+        "catalog/list" => to(json!({ "catalogs": crate::catalogs::list(ctx)? })),
+        "catalog/add" => {
+            let (key, kind) = crate::catalogs::add(ctx, req(p, "input")?, s(p, "kind"))?;
+            let rep = crate::catalogs::refresh(ctx, true, Some(&key))?;
+            to(json!({ "catalog": key, "kind": kind, "refresh": rep }))
         }
-        "sources/remove" => to(json!({ "removed": crate::sources::remove(ctx, req(p, "input")?)? })),
-        "sources/refresh" => to(crate::sources::refresh(ctx, true, s(p, "source"))?),
-        "workbench/add" => {
+        "catalog/remove" => to(json!({ "removed": crate::catalogs::remove(ctx, req(p, "input")?)? })),
+        "catalog/refresh" => to(crate::catalogs::refresh(ctx, true, s(p, "catalog"))?),
+        "user/add" => {
             let policy = s(p, "update").map(crate::config::Policy::parse).transpose()?;
-            to(crate::workbench::add(ctx, req(p, "skill")?, &strs(p, "agents"), policy, b(p, "copy"), b(p, "shadow"))?)
+            to(crate::user::add(ctx, req(p, "skill")?, &strs(p, "agents"), policy, b(p, "copy"), b(p, "shadow"))?)
         }
-        "workbench/remove" => to(json!({ "removed": crate::workbench::remove(ctx, req(p, "skill")?)? })),
-        "workbench/install" => to(crate::workbench::install(ctx, b(p, "frozen"))?),
-        "workbench/update" => to(json!({ "updates": crate::workbench::update(ctx, s(p, "skill"))? })),
-        "workbench/outdated" => to(json!({ "pending": crate::workbench::outdated(ctx)? })),
-        "workbench/rollback" => to(crate::workbench::rollback(ctx, req(p, "skill")?)?),
-        "workbench/policy" => {
+        "user/remove" => to(json!({ "removed": crate::user::remove(ctx, req(p, "skill")?)? })),
+        "user/install" => to(crate::user::install(ctx, b(p, "frozen"))?),
+        "user/update" => to(json!({ "updates": crate::user::update(ctx, s(p, "skill"))? })),
+        "user/outdated" => to(json!({ "pending": crate::user::outdated(ctx)? })),
+        "user/rollback" => to(crate::user::rollback(ctx, req(p, "skill")?)?),
+        "user/policy" => {
             let pol = crate::config::Policy::parse(req(p, "policy")?)?;
-            to(json!({ "id": crate::workbench::set_policy(ctx, req(p, "skill")?, pol)? }))
+            to(json!({ "id": crate::user::set_policy(ctx, req(p, "skill")?, pol)? }))
         }
         "status" => {
-            let wb = crate::workbench::status(ctx)?;
+            let wb = crate::user::status(ctx)?;
             let w = match ws::current(ctx)? {
                 Some(w) => Some(ws::status(ctx, &w)?),
                 None => None,
             };
-            to(json!({ "workbench": wb, "workspace": w }))
+            to(json!({ "user": wb, "source_repo": w }))
         }
         "link" => to(crate::links::link(ctx, req(p, "skill")?, s(p, "to"), b(p, "global"), &strs(p, "agents"), b(p, "copy"), b(p, "shadow"))?),
         "unlink" => to(crate::links::unlink(ctx, s(p, "skill"), s(p, "to"), b(p, "global"), b(p, "all"))?),
@@ -199,12 +199,12 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
             crate::agentskill::mark_offered(ctx)?;
             Ok(json!({ "ok": true }))
         }
-        "workspace/init" => to(ws::init(ctx, s(p, "name"), b(p, "agentSkill"))?),
-        "workspace/status" => to(ws::status(ctx, &ws::require(ctx)?)?),
-        "workspace/vendor" => to(ws::vendor(ctx, &ws::require(ctx)?, req(p, "skill")?, s(p, "name"), s(p, "path"))?),
-        "workspace/import" => to(ws::import(ctx, &ws::require(ctx)?, req(p, "folder")?, s(p, "name"), s(p, "upstream"), s(p, "base"))?),
-        "workspace/new" => to(ws::new_skill(&ws::require(ctx)?, req(p, "name")?, s(p, "description"))?),
-        "workspace/lint" => {
+        "sourceRepo/init" => to(ws::init(ctx, s(p, "name"), b(p, "agentSkill"))?),
+        "sourceRepo/status" => to(ws::status(ctx, &ws::require(ctx)?)?),
+        "sourceRepo/vendor" => to(ws::vendor(ctx, &ws::require(ctx)?, req(p, "skill")?, s(p, "name"), s(p, "path"))?),
+        "sourceRepo/import" => to(ws::import(ctx, &ws::require(ctx)?, req(p, "folder")?, s(p, "name"), s(p, "upstream"), s(p, "base"))?),
+        "sourceRepo/new" => to(ws::new_skill(&ws::require(ctx)?, req(p, "name")?, s(p, "description"))?),
+        "sourceRepo/lint" => {
             let w = ws::require(ctx)?;
             let names = strs(p, "skills");
             let mut fixed = Vec::new();
@@ -215,33 +215,33 @@ pub fn dispatch(ctx: &Ctx, method: &str, p: &Value) -> Result<Value> {
                     }
                 }
             }
-            let mut r = crate::lint::lint_workspace(ctx, &w, &names)?;
+            let mut r = crate::lint::lint_repo(ctx, &w, &names)?;
             r.fixed = fixed;
             let paths: std::collections::BTreeMap<String, String> = w.manifest.skills.iter().map(|(n, sk)| (n.clone(), w.root.join(&sk.path).to_string_lossy().to_string())).collect();
             to(json!({ "report": r, "skillPaths": paths }))
         }
-        "workspace/update" => to(ws::update(ctx, &ws::require(ctx)?, s(p, "skill"), b(p, "continue"), b(p, "abort"))?),
-        "workspace/outdated" => to(ws::outdated(ctx, &ws::require(ctx)?)?),
-        "workspace/install" => to(ws::install_dev(ctx, &ws::require(ctx)?, &strs(p, "agents"))?),
-        "workspace/edit" => to(ws::edit(ctx, req(p, "skill")?, s(p, "branch"))?),
-        "workspace/commit" => to(ws::commit(ctx, req(p, "skill")?, req(p, "message")?)?),
-        "workspace/use" => to(ws::use_variant(ctx, req(p, "spec")?, b(p, "local"), b(p, "reset"))?),
-        "workspace/changedFiles" => {
+        "sourceRepo/update" => to(ws::update(ctx, &ws::require(ctx)?, s(p, "skill"), b(p, "continue"), b(p, "abort"))?),
+        "sourceRepo/outdated" => to(ws::outdated(ctx, &ws::require(ctx)?)?),
+        "sourceRepo/install" => to(ws::install_dev(ctx, &ws::require(ctx)?, &strs(p, "agents"))?),
+        "sourceRepo/edit" => to(ws::edit(ctx, req(p, "skill")?, s(p, "branch"))?),
+        "sourceRepo/commit" => to(ws::commit(ctx, req(p, "skill")?, req(p, "message")?)?),
+        "sourceRepo/use" => to(ws::use_variant(ctx, req(p, "spec")?, b(p, "local"), b(p, "reset"))?),
+        "sourceRepo/changedFiles" => {
             let w = ws::require(ctx)?;
             to(json!({ "files": ws::changed_files(ctx, &w, req(p, "skill")?, s(p, "from").unwrap_or("base"), s(p, "to").unwrap_or("working"))? }))
         }
-        "workspace/versionFile" => {
+        "sourceRepo/versionFile" => {
             let w = ws::require(ctx)?;
             match ws::version_file(ctx, &w, req(p, "skill")?, req(p, "which")?, req(p, "path")?)? {
                 Some(bytes) => Ok(file_payload(&bytes)),
                 None => Ok(json!({ "missing": true })),
             }
         }
-        "workspace/mergeState" => {
+        "sourceRepo/mergeState" => {
             let w = ws::require(ctx)?;
             to(json!({ "state": ws::merge_state(ctx, &w, req(p, "skill")?)?, "skillDir": w.skill_dir(req(p, "skill")?)? }))
         }
-        "workspace/allowLicense" => {
+        "sourceRepo/allowLicense" => {
             let w = ws::require(ctx)?;
             ws::set_license_override(&w, req(p, "skill")?, req(p, "justification")?)?;
             Ok(json!({ "ok": true }))

@@ -66,8 +66,8 @@ button:disabled{opacity:.5;cursor:default}
   <label><input type="radio" name="bump" value="major"> major</label>
 </div>
 <div class="row">
-  <label><input type="checkbox" id="push"> push</label>
-  <label><input type="checkbox" id="pr"> open a pull request on the target</label>
+  <label><input type="radio" name="mode" value="push" checked> push to the target</label>
+  <label><input type="radio" name="mode" value="pr"> open a pull request on the target</label>
   <label><input type="checkbox" id="acceptCopyleft"> accept strong copyleft</label>
 </div>
 <div class="row"><button id="go" ${blocked ? "disabled" : ""}>${blocked ? "Blocked by failing gates" : "Publish"}</button></div>
@@ -79,7 +79,8 @@ const sug = ${JSON.stringify(suggested)};
 document.querySelectorAll('input[name=bump]').forEach(i => { if (i.value === sug) i.checked = true; });
 document.getElementById('go').addEventListener('click', () => {
   const bump = document.querySelector('input[name=bump]:checked').value;
-  vscode.postMessage({ type: 'publish', bump, push: document.getElementById('push').checked, pr: document.getElementById('pr').checked, acceptCopyleft: document.getElementById('acceptCopyleft').checked });
+  const mode = document.querySelector('input[name=mode]:checked').value;
+  vscode.postMessage({ type: 'publish', bump, push: mode === 'push', pr: mode === 'pr', acceptCopyleft: document.getElementById('acceptCopyleft').checked });
 });
 </script></body></html>`;
 }

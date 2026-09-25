@@ -125,7 +125,7 @@ fn index_native(ctx: &Ctx, owner: &str, slug: &str, d: Detail) -> Result<String>
 
 /// Live search: mirrors become git pointers; native skills are indexed from their detail.
 pub fn live_search(ctx: &Ctx, q: &str, limit: usize) -> Result<usize> {
-    if ctx.opts.offline || q.trim().is_empty() || crate::sources::live_fresh(ctx, CATALOG, q)? {
+    if ctx.opts.offline || q.trim().is_empty() || crate::catalogs::live_fresh(ctx, CATALOG, q)? {
         return Ok(0);
     }
     // Skills ClawHub flags as suspicious are excluded from search.
@@ -157,12 +157,12 @@ pub fn live_search(ctx: &Ctx, q: &str, limit: usize) -> Result<usize> {
     let gh = &ctx.gh;
     let details = std::thread::scope(|s| {
         let h = s.spawn(|| {
-            crate::sources::parallel_map(natives, MAX_NATIVE, |(o, sl)| {
+            crate::catalogs::parallel_map(natives, MAX_NATIVE, |(o, sl)| {
                 let d = detail(gh, &o, &sl, None);
                 (o, sl, d)
             })
         });
-        crate::sources::ensure_repos_indexed(ctx, &repos);
+        crate::catalogs::ensure_repos_indexed(ctx, &repos);
         h.join().unwrap_or_default()
     });
     let mut n = 0;
@@ -182,7 +182,7 @@ pub fn live_search(ctx: &Ctx, q: &str, limit: usize) -> Result<usize> {
             Err(e) => ctx.ui.warn(&format!("ClawHub {owner}/{slug}: {e:#}")),
         }
     }
-    crate::sources::live_mark(ctx, CATALOG, q)?;
+    crate::catalogs::live_mark(ctx, CATALOG, q)?;
     Ok(n)
 }
 

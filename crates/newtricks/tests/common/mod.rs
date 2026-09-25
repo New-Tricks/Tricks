@@ -54,7 +54,7 @@ impl Sandbox {
         for d in [&s.home, &s.config, &s.data, &s.fixtures] {
             std::fs::create_dir_all(d).unwrap();
         }
-        std::fs::write(s.config.join("tricks.toml"), "[settings]\ndefault_sources = false\nagents = [\"claude\", \"codex\"]\n").unwrap();
+        std::fs::write(s.config.join("tricks.toml"), "[settings]\ndefault_catalogs = false\nagents = [\"claude\", \"codex\"]\n").unwrap();
         s
     }
 
