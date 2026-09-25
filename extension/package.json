@@ -2,7 +2,7 @@
   "name": "new-tricks",
   "displayName": "New Tricks",
   "description": "Teach your agents new tricks: author, customize and test agent skills in a source repo — federated search, vendoring with upstream merges, branch experiments, links for testing, lint and publish.",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "publisher": "newtricks",
   "license": "Apache-2.0",
   "homepage": "https://new-tricks.github.io/tricks/vscode/",

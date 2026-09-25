@@ -1,6 +1,6 @@
 # New Tricks — v1 specification
 
-Status: design agreed; implemented (0.6.0) — see [IMPLEMENTATION.md](IMPLEMENTATION.md) for status, verification, implementation decisions and known gaps.
+Status: design agreed; implemented (0.6.1) — see [IMPLEMENTATION.md](IMPLEMENTATION.md) for status, verification, implementation decisions and known gaps.
 
 Updated: 25 September 2026 (0.3: New Tricks works on source repos only; workstation installs removed). Supersedes *Skills Manager — first-version specification* (17 September 2026).
 

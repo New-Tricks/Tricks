@@ -171,7 +171,10 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                     for c in &r.conflicts {
                         println!("    CONFLICT {c}");
                     }
-                    println!("  resolve them, then commit with git{}", if r.mode == "branch" { " (`git merge --continue`)" } else { "" });
+                    println!(
+                        "  resolve them, then commit with git{}; the next `tricks` command finishes the merge (editing, variants, pinned links)",
+                        if r.mode == "branch" { " (`git merge --continue`)" } else { "" }
+                    );
                 } else if let Some(c) = &r.commit {
                     println!("merged {what} into {} ({})", r.into, short(c));
                     for p in &r.placements {
@@ -213,6 +216,10 @@ pub fn run(ctx: &Ctx, c: Cmd) -> Result<()> {
                 }
             } else {
                 emit(json, &r, print_update);
+            }
+            // Scripts and CI must see a run that stopped on conflicts or failed a skill.
+            if r.items.iter().any(|i| i.state == "error" || (!dry_run && i.state == "conflicts")) {
+                std::process::exit(1);
             }
         }
         Cmd::Contribute { skill, title, body, dry_run } => {
@@ -360,7 +367,9 @@ fn print_grouped(items: &[crate::links::LinkInfo], dev: bool) {
             let from = l
                 .source
                 .as_deref()
-                .map(|src| format!("  {}", crate::links::describe(l.branch.as_deref(), l.pinned, src, l.commit.as_deref())))
+                .map(|src| {
+                    format!("  {}", crate::links::describe(l.branch.as_deref(), l.pinned, src, l.commit.as_deref(), l.mode == "copy"))
+                })
                 .unwrap_or_default();
             println!("  {what:<28} {:<8} {} ({}){from}{h}", l.agent, l.path, l.mode);
         }

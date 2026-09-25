@@ -144,15 +144,21 @@ fn prepare_target(ctx: &Ctx, url: &str) -> Result<(PathBuf, String, std::fs::Fil
     Ok((dir, branch, lock))
 }
 
-/// Canonical source string for provenance (remote URL normalized, else local path).
+/// Canonical source string for provenance: the `origin` remote, normalized. Published
+/// repositories never carry a local path or credentials: without a usable remote this is
+/// `local:<repo folder name>`.
 pub fn source_label(dir: &Path) -> String {
-    if let Ok(url) = git(dir, &["remote", "get-url", "origin"]) {
-        if let Ok(src) = crate::id::parse_source_input(&url) {
-            return src.to_string();
-        }
-        return url;
-    }
-    dir.to_string_lossy().to_string()
+    let local = || format!("local:{}", dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+    let Ok(url) = git(dir, &["remote", "get-url", "origin"]) else { return local() };
+    // A URL remote may carry credentials (`https://user:token@host/…`): drop them first.
+    let Some((scheme, rest)) = url.split_once("://").filter(|(scheme, _)| *scheme != "file") else {
+        // scp-like `git@host:owner/repo`, or a local path.
+        return crate::id::parse_source_input(&url).map(|s| s.to_string()).unwrap_or_else(|_| local());
+    };
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let url = format!("{scheme}://{host}/{path}");
+    crate::id::parse_source_input(&url).map(|s| s.to_string()).unwrap_or(url)
 }
 
 fn target_visibility(ctx: &Ctx, repo: &Path) -> (bool, String) {
@@ -771,5 +777,25 @@ mod tests {
         assert!(validate_marketplace_name("acme-skills").is_ok());
         assert!(validate_marketplace_name("agent-skills").is_err());
         assert!(validate_marketplace_name("Acme").is_err());
+    }
+
+    #[test]
+    fn source_label_never_publishes_local_paths_or_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("my-skills");
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q"]).unwrap();
+        assert_eq!(source_label(&dir), "local:my-skills");
+        git(&dir, &["remote", "add", "origin", "/srv/git/my-skills.git"]).unwrap();
+        assert_eq!(source_label(&dir), "local:my-skills");
+        git(&dir, &["remote", "set-url", "origin", "https://github.com/acme/my-skills.git"]).unwrap();
+        assert_eq!(source_label(&dir), "github.com/acme/my-skills");
+        git(&dir, &["remote", "set-url", "origin", "https://user:secret@git.example.internal:8443/team/my-skills.git"]).unwrap();
+        let l = source_label(&dir);
+        assert!(!l.contains("secret") && !l.contains("user@"), "{l}");
+        git(&dir, &["remote", "set-url", "origin", "https://x-access-token:ghp_abc@github.com/acme/my-skills.git"]).unwrap();
+        assert_eq!(source_label(&dir), "github.com/acme/my-skills");
+        git(&dir, &["remote", "set-url", "origin", "git@github.com:acme/my-skills.git"]).unwrap();
+        assert_eq!(source_label(&dir), "github.com/acme/my-skills");
     }
 }

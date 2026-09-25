@@ -277,15 +277,16 @@ fn source_kind(target: &str, commit: Option<&str>) -> &'static str {
 }
 
 /// How a source repo skill's link deploys, for people: `main (working tree, live)`,
-/// `terse (draft, live)`, `verbose @ 3f2a1c9 (snapshot)`; `pinned` when it does not follow
-/// the default.
-pub fn describe(branch: Option<&str>, pinned: bool, source: &str, commit: Option<&str>) -> String {
+/// `terse (draft, live)`, `verbose @ 3f2a1c9 (snapshot)`; `copy` instead of `live` for a
+/// copy (edits show only after re-linking); `pinned` when it does not follow the default.
+pub fn describe(branch: Option<&str>, pinned: bool, source: &str, commit: Option<&str>, copy: bool) -> String {
     let b = branch.unwrap_or("detached");
     let pin = if pinned { ", pinned" } else { "" };
+    let live = if copy { "copy" } else { "live" };
     match (source, commit) {
         ("snapshot", Some(c)) => format!("{b} @ {} (snapshot{pin})", &c[..c.len().min(7)]),
-        ("draft", _) => format!("{b} (draft, live{pin})"),
-        _ => format!("{b} (working tree, live{pin})"),
+        ("draft", _) => format!("{b} (draft, {live}{pin})"),
+        _ => format!("{b} (working tree, {live}{pin})"),
     }
 }
 

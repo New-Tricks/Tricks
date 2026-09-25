@@ -431,8 +431,8 @@ pub fn remove(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<RemoveReport> {
         unlinked.push(p.path);
     }
     ctx.state.conn.execute(
-        "DELETE FROM meta WHERE key IN (?1, ?2, ?3)",
-        params![editing_key(ws, name), snapshot_key(ws, name), hosted_up_key(ws, name)],
+        "DELETE FROM meta WHERE key IN (?1, ?2, ?3, ?4)",
+        params![editing_key(ws, name), snapshot_key(ws, name), hosted_up_key(ws, name), pending_merge_key(ws, name)],
     )?;
     let dir = ws.root.join(&rel);
     if dir.exists() {
@@ -1192,12 +1192,17 @@ fn pinned_to(ctx: &Ctx, ws: &SourceRepo, name: &str, branch: &str) -> Result<Vec
         .collect())
 }
 
-/// Bring links up to date at startup: return them to the working tree once a merge they
-/// were frozen for has been committed (with plain `git commit`), and refresh snapshots of
-/// branches that have moved. Cheap: only skills with a merge snapshot or snapshot links.
+/// Bring links up to date at startup: finish a branch merge whose conflicts were resolved
+/// and committed with git, return links to the working tree once an upstream update they
+/// were frozen for has been committed, and refresh snapshots of branches that have moved.
+/// Cheap: only skills with pending state or snapshot links.
 pub fn reconcile(ctx: &Ctx) -> Result<()> {
     let Some(ws) = current(ctx)? else { return Ok(()) };
     let head_branch = git::current_branch(&ws.root);
+    for name in ws.manifest.skills.keys() {
+        reconcile_pending_merge(ctx, &ws, name)?;
+    }
+    let ws = SourceRepo::open(&ws.root)?;
     for name in ws.manifest.skills.keys() {
         if ctx.state.meta_get(&snapshot_key(&ws, name))?.is_some() {
             redeploy(ctx, &ws, name)?;
@@ -1514,12 +1519,14 @@ pub fn merge_branch(ctx: &Ctx, input: &str, o: &MergeOptions) -> Result<MergeRep
             bail!("the source repo has uncommitted changes; commit or stash them before merging a whole branch");
         }
         // `git merge` takes no trailers: merge without committing, then commit.
+        let head = git::head_commit(&ws.root)?;
         if let Err(e) = git(&ws.root, &["merge", "--no-ff", "--no-commit", "-q", branch]) {
             rep.conflicts = unmerged(&ws.root);
             if rep.conflicts.is_empty() {
                 let _ = git(&ws.root, &["merge", "--abort"]);
                 return Err(e);
             }
+            record_pending_merge(ctx, &ws, name, branch, true, &head)?;
             return Ok(rep);
         }
         git(&ws.root, &commit_args(&message, &trailer))?;
@@ -1532,6 +1539,8 @@ pub fn merge_branch(ctx: &Ctx, input: &str, o: &MergeOptions) -> Result<MergeRep
             if rep.conflicts.is_empty() {
                 bail!("the changes to `{name}` on {branch} could not be applied onto {into}");
             }
+            let head = git::head_commit(&ws.root)?;
+            record_pending_merge(ctx, &ws, name, branch, false, &head)?;
             return Ok(rep);
         }
         if git::git_ok(&ws.root, &["diff", "--cached", "--quiet", "--", &rel]) {
@@ -1542,9 +1551,15 @@ pub fn merge_branch(ctx: &Ctx, input: &str, o: &MergeOptions) -> Result<MergeRep
         git(&ws.root, &args)?;
     }
     rep.commit = Some(git::head_commit(&ws.root)?);
-    // The experiment is in: stop editing it and stop deploying the branch as a variant.
-    if ctx.state.meta_get(&editing_key(&ws, name))?.as_deref() == Some(branch) {
-        ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [editing_key(&ws, name)])?;
+    rep.placements = finish_merge(ctx, &ws, name, branch, o.whole_branch)?;
+    Ok(rep)
+}
+
+/// After a branch is merged: stop editing it, stop deploying it as a variant, and move
+/// links pinned to it to the default (which now has the changes). Returns the skill's links.
+fn finish_merge(ctx: &Ctx, ws: &SourceRepo, name: &str, branch: &str, whole_branch: bool) -> Result<Vec<String>> {
+    if ctx.state.meta_get(&editing_key(ws, name))?.as_deref() == Some(branch) {
+        ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [editing_key(ws, name)])?;
     }
     if ws.skill(name)?.use_branch.as_deref() == Some(branch) {
         ws.set_skill_field(name, "use", None)?;
@@ -1555,18 +1570,58 @@ pub fn merge_branch(ctx: &Ctx, input: &str, o: &MergeOptions) -> Result<MergeRep
         config::table_mut(&mut doc, &["use"]).remove(name);
         config::save_doc(&wf, &doc)?;
     }
-    // Links pinned to the merged branch now follow the default, which has the changes.
     let ws = SourceRepo::open(&ws.root)?;
-    let skills: Vec<String> = if o.whole_branch { ws.manifest.skills.keys().cloned().collect() } else { vec![name.to_string()] };
+    let skills: Vec<String> = if whole_branch { ws.manifest.skills.keys().cloned().collect() } else { vec![name.to_string()] };
+    let mut placements = Vec::new();
     for s in &skills {
         let moved = ctx.state.conn.execute("UPDATE placements SET pin=NULL WHERE skill=?1 AND pin=?2", params![ws.skill_key(s), branch])?;
         if s == name {
-            rep.placements = redeploy(ctx, &ws, s)?;
+            placements = redeploy(ctx, &ws, s)?;
         } else if moved > 0 {
             redeploy(ctx, &ws, s)?;
         }
     }
-    Ok(rep)
+    Ok(placements)
+}
+
+fn pending_merge_key(ws: &SourceRepo, name: &str) -> String {
+    format!("merging:{}:{name}", ws.root.display())
+}
+
+/// A merge stopped on conflicts: remember it, so that once the user commits the
+/// resolution with git, the next `tricks` command finishes it ([`reconcile`]).
+fn record_pending_merge(ctx: &Ctx, ws: &SourceRepo, name: &str, branch: &str, whole_branch: bool, head: &str) -> Result<()> {
+    let v = serde_json::json!({ "branch": branch, "whole_branch": whole_branch, "head": head });
+    ctx.state.meta_set(&pending_merge_key(ws, name), &v.to_string())
+}
+
+/// Finish a merge that stopped on conflicts once its resolution is committed; forget it
+/// if it was abandoned. Leaves it pending while conflicts or an uncommitted result remain.
+fn reconcile_pending_merge(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<()> {
+    let key = pending_merge_key(ws, name);
+    let Some(v) = ctx.state.meta_get(&key)? else { return Ok(()) };
+    let v: serde_json::Value = serde_json::from_str(&v).unwrap_or_default();
+    let (Some(branch), Some(head)) = (v["branch"].as_str(), v["head"].as_str()) else {
+        ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [&key])?;
+        return Ok(());
+    };
+    let whole = v["whole_branch"].as_bool().unwrap_or(false);
+    let in_git_merge = git::git_ok(&ws.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+    if !unmerged(&ws.root).is_empty() || in_git_merge {
+        return Ok(());
+    }
+    let moved = git::head_commit(&ws.root).map(|h| h != head).unwrap_or(false);
+    let committed = moved && (!whole || git::git_ok(&ws.root, &["merge-base", "--is-ancestor", branch, "HEAD"]));
+    let rel = ws.skill(name)?.path.clone();
+    let abandoned =
+        !committed && (moved || git(&ws.root, &["status", "--porcelain", "--", &rel]).map(|o| o.trim().is_empty()).unwrap_or(false));
+    if committed || abandoned {
+        ctx.state.conn.execute("DELETE FROM meta WHERE key=?1", [&key])?;
+    }
+    if committed {
+        finish_merge(ctx, ws, name, branch, whole)?;
+    }
+    Ok(())
 }
 
 fn unmerged(root: &Path) -> Vec<String> {
@@ -1584,6 +1639,7 @@ pub struct UseReport {
 pub fn use_variant(ctx: &Ctx, input: &str, local: bool, reset: bool) -> Result<UseReport> {
     let ws = require(ctx)?;
     let (name, branch) = match input.split_once('@') {
+        Some((n, _)) if reset => bail!("`--reset` takes just the skill: `tricks use {n} --reset`"),
         Some((n, b)) => (n.to_string(), Some(b.to_string())),
         None if reset => (input.to_string(), None),
         None => bail!("use `name@branch` (or `name --reset`)"),
@@ -1734,16 +1790,32 @@ pub fn status(ctx: &Ctx, ws: &SourceRepo) -> Result<RepoStatus> {
     })
 }
 
+/// The checkout that `working` and `head` refer to: the draft worktree the command runs
+/// in (`.tricks/work/<branch>`), else the source repo itself.
+pub fn checkout_root(ctx: &Ctx, ws: &SourceRepo) -> PathBuf {
+    let work = crate::paths::canon(&ws.root.join(config::WORK_DIR)).unwrap_or_else(|_| ws.root.join(config::WORK_DIR));
+    let cwd = crate::paths::canon(&ctx.opts.cwd).unwrap_or_else(|_| ctx.opts.cwd.clone());
+    if let Ok(rest) = cwd.strip_prefix(&work)
+        && let Some(first) = rest.components().next()
+    {
+        let wt = work.join(first);
+        if wt.join(".git").exists() {
+            return wt;
+        }
+    }
+    ws.root.clone()
+}
+
 /// Content of a source repo skill file at B (base), U (upstream) or C (working tree).
 pub fn version_file(ctx: &Ctx, ws: &SourceRepo, name: &str, which: &str, rel: &str) -> Result<Option<Vec<u8>>> {
     let rel = rel.trim_start_matches('/');
     match which {
-        "working" | "C" => Ok(std::fs::read(ws.skill_dir(name)?.join(rel)).ok()),
+        "working" | "C" => Ok(std::fs::read(checkout_root(ctx, ws).join(&ws.skill(name)?.path).join(rel)).ok()),
         "base" | "B" => Ok(sides(ctx, ws, name, Fetch::Never)?.and_then(|sd| std::fs::read(sd.base_dir.join(rel)).ok())),
         "upstream" | "U" => Ok(sides(ctx, ws, name, Fetch::Never)?.and_then(|sd| std::fs::read(sd.up_dir.join(rel)).ok())),
         "head" => {
             let p = format!("{}/{rel}", ws.skill(name)?.path);
-            Ok(git::git_raw(&ws.root, &["show", &format!("HEAD:{p}")]).ok())
+            Ok(git::git_raw(&checkout_root(ctx, ws), &["show", &format!("HEAD:{p}")]).ok())
         }
         "candidate" | "R" => {
             // What the upstream merge would produce, computed in a scratch copy.
@@ -1761,11 +1833,11 @@ pub fn version_file(ctx: &Ctx, ws: &SourceRepo, name: &str, which: &str, rel: &s
     }
 }
 
-/// Files of a source repo skill at a git revision.
-fn files_at(ws: &SourceRepo, name: &str, rev: &str) -> BTreeSet<String> {
+/// Files of a source repo skill at a git revision (of `checkout`: the repo or a draft).
+fn files_at(ws: &SourceRepo, checkout: &Path, name: &str, rev: &str) -> BTreeSet<String> {
     let Ok(s) = ws.skill(name) else { return BTreeSet::new() };
     let prefix = format!("{}/", s.path.trim_end_matches('/'));
-    git(&ws.root, &["ls-tree", "-r", "--name-only", rev, "--", &s.path])
+    git(checkout, &["ls-tree", "-r", "--name-only", rev, "--", &s.path])
         .map(|o| o.lines().filter_map(|l| l.strip_prefix(&prefix)).map(String::from).collect())
         .unwrap_or_default()
 }
@@ -1782,7 +1854,8 @@ pub fn candidate_dir(ctx: &Ctx, ws: &SourceRepo, name: &str) -> Result<tempfile:
 /// Files that differ between two versions of a source repo skill (for `diff` and the
 /// Changes view).
 pub fn changed_files(ctx: &Ctx, ws: &SourceRepo, name: &str, from: &str, to: &str) -> Result<Vec<String>> {
-    let mut paths = dir_files(&ws.skill_dir(name)?);
+    let checkout = checkout_root(ctx, ws);
+    let mut paths = dir_files(&checkout.join(&ws.skill(name)?.path));
     paths.retain(|p| !p.starts_with(".git/"));
     let sd =
         if [from, to].iter().any(|w| matches!(*w, "base" | "B" | "upstream" | "U")) { sides(ctx, ws, name, Fetch::Never)? } else { None };
@@ -1792,7 +1865,7 @@ pub fn changed_files(ctx: &Ctx, ws: &SourceRepo, name: &str, from: &str, to: &st
     }
     for rev in [from, to] {
         if !matches!(rev, "working" | "C" | "base" | "B" | "upstream" | "U" | "candidate" | "R") {
-            paths.extend(files_at(ws, name, if rev == "head" { "HEAD" } else { rev }));
+            paths.extend(files_at(ws, &checkout, name, if rev == "head" { "HEAD" } else { rev }));
         }
     }
     // Compute a candidate once rather than per file.

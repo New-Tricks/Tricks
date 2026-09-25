@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1
+
+- The Links view says `copy` rather than `live` for links that are copies (they don't follow edits).
+- **Experiment on a Branch…** no longer claims your linked agents load the draft; it offers **Link to Project…** to pin a link to the branch. **Finish Editing** says what pinned links deploy.
+- `tricks.toml` completion and validation match the configuration New Tricks actually reads (policies `review`, `pinned`, `paused`; `lint.strict-spec`; removed keys dropped).
+- CLI fixes: a merge whose conflicts you resolve and commit with git is finished by the next command (editing ends, pinned links move back); `update` exits non-zero when it stops on conflicts or fails; `use <skill>@<branch> --reset` is refused instead of choosing the branch; `diff` inside a draft compares the draft; published provenance never contains a local path or credentials.
+
 ## 0.6.0
 
 - Each link deploys its own branch: **Link to Project…** asks whether to follow the skill's default or a branch, and the Links view shows what every link deploys (`main (live)`, `terse (draft, pinned)`, `verbose @ 3f2a1c9`). **Experiment on a Branch…** no longer re-points your other links.

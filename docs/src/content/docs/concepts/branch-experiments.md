@@ -115,7 +115,7 @@ tricks diff changelog-writer head..terse
 +3. One line per change, at most 12 words. No preamble.
 ```
 
-A branch name means its committed tip. `working` is always your main checkout, even when you run `diff` inside a draft. To see uncommitted changes in a draft, run `git diff` in the draft. `diff` doesn't compare with upstream: it points you to [`outdated --diff` and `update --dry-run`](/tricks/concepts/upstream/) instead.
+A branch name means its committed tip. `working` and `head` are the checkout you run `diff` in: inside a draft (for example after `cd "$(tricks edit changelog-writer)"`), `tricks diff changelog-writer` shows the draft's uncommitted changes; anywhere else in the repo, your main checkout's. `diff` doesn't compare with upstream: it points you to [`outdated --diff` and `update --dry-run`](/tricks/concepts/upstream/) instead.
 
 ## Choose the default with `use`
 
@@ -124,7 +124,7 @@ A link that isn't pinned follows the skill's default: your working tree. [`trick
 ```bash
 tricks use changelog-writer@terse             # recorded in tricks.toml (committed, for everyone)
 tricks use changelog-writer@default --local   # this machine only, in tricks.work.toml (git-ignored)
-tricks use changelog-writer --reset           # back to the working tree
+tricks use changelog-writer --reset           # back to the working tree (takes the skill alone, no @branch)
 ```
 
 ```text
@@ -171,10 +171,10 @@ If the changes don't apply cleanly, `merge` stops and leaves the conflicts for g
 ```text
 merging changelog-writer from verbose into main stopped on conflicts:
     CONFLICT skills/changelog-writer/SKILL.md
-  resolve them, then commit with git
+  resolve them, then commit with git; the next `tricks` command finishes the merge (editing, variants, pinned links)
 ```
 
-Resolve the conflict markers and commit with git (`git merge --continue` for `--whole-branch`). The steps New Tricks takes after a clean merge don't run in this case, so finish them yourself: `tricks edit <skill> --done` if you were editing the branch, and `tricks link <skill> --to <project>` to un-pin each link that was pinned to it.
+Resolve the conflict markers and commit with git (`git merge --continue` for `--whole-branch`). The next `tricks` command you run in the source repo, or a VS Code extension refresh, then finishes the merge as a clean one would have: editing of the branch ends, a `use` of it is reset, and links pinned to it move to the default. If you abandon the merge instead (`git merge --abort`, or discard the changes), nothing else changes.
 
 ### Clean up the branch
 
